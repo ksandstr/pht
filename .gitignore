@@ -1,0 +1,7 @@
+*~
+*.o
+.*.sw[opn]
+.deps
+tags
+core
+core.*
