@@ -32,13 +32,16 @@ extern size_t pht_count(const struct pht *ht);
 extern void pht_clear(struct pht *ht);
 extern struct pht *pht_check(const struct pht *ht, const char *abortstr);
 
-extern bool pht_copy(struct pht *dst, const struct pht *src);
+/* NOTE: due to effects of progressive migration, calling pht_add()
+ * invalidates all iterators referencing @ht.
+ */
 extern bool pht_add(struct pht *ht, size_t hash, const void *p);
+extern bool pht_copy(struct pht *dst, const struct pht *src);
 extern bool pht_del(struct pht *ht, size_t hash, const void *p);
 
 struct pht_iter {
 	struct _pht_table *t;
-	size_t off;
+	size_t off, last, hash;
 };
 
 extern void *pht_firstval(const struct pht *ht,

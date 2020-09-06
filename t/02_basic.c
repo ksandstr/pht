@@ -49,7 +49,6 @@ static size_t key_count(
 int main(void)
 {
 	plan_tests(15);
-	todo_start("o rly?");
 
 	static const char *const strs[] = {
 		"my ass-clap keeps alerting the bees!",
