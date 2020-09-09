@@ -1,3 +1,4 @@
+# detritus
 *~
 *.o
 .*.sw[opn]
@@ -5,3 +6,6 @@
 tags
 core
 core.*
+
+# outputs
+bench

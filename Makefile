@@ -3,13 +3,12 @@ CCAN_DIR=~/src/ccan
 
 CFLAGS:=-O2 -std=gnu11 -Wall -g -march=native \
 	-D_GNU_SOURCE -I $(CCAN_DIR) -I $(abspath .) \
-	-DCCAN_LIST_DEBUG=1 #-DDEBUG_ME_HARDER
+	#-DCCAN_LIST_DEBUG=1 #-DDEBUG_ME_HARDER
 
 TEST_BIN:=$(patsubst t/%.c,t/%,$(wildcard t/*.c))
-MAIN_OBJS:=$(patsubst %.c,%.o,$(wildcard *.c))
 
 
-all: tags $(TEST_BIN)
+all: tags bench $(TEST_BIN)
 
 
 clean:
@@ -17,7 +16,7 @@ clean:
 
 
 distclean: clean
-	@rm -f tags
+	@rm -f bench tags
 	@rm -rf .deps
 
 
@@ -29,9 +28,15 @@ tags: $(shell find . -iname "*.[ch]" -or -iname "*.p[lm]")
 	@ctags -R *
 
 
-t/%: t/%.o $(MAIN_OBJS) \
-		ccan-list.o ccan-htable.o ccan-hash.o ccan-tap.o \
-		ccan-tal.o ccan-take.o
+bench: bench.o pht.o \
+		ccan-list.o ccan-hash.o ccan-htable.o \
+		ccan-tally.o ccan-str.o ccan-read_write_all.o
+	@echo "  LD $@"
+	@$(CC) -o $@ $^ $(CFLAGS) $(LDFLAGS) $(LIBS)
+
+
+t/%: t/%.o pht.o \
+		ccan-list.o ccan-htable.o ccan-hash.o ccan-tap.o
 	@echo "  LD $@"
 	@$(CC) -o $@ $^ $(CFLAGS) $(LDFLAGS) $(LIBS)
 
