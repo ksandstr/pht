@@ -318,7 +318,7 @@ int main(void)
 		fprintf(stderr, "length=%zu too small\n", length);
 		return EXIT_FAILURE;
 	}
-	char *wordbuf = malloc(length + 2);
+	char *wordbuf = aligned_alloc(1024 * 1024, length + 2);
 	if(wordbuf == NULL) {
 		perror("malloc");
 		abort();
