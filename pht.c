@@ -98,6 +98,13 @@ static inline uintptr_t ptr_to_entry(
 }
 
 
+static inline uintptr_t stash_bits(const struct _pht_table *t, size_t hash) {
+	int d = t->bits;
+	size_t b = (hash << d) | (hash >> (sizeof hash * CHAR_BIT - d));
+	return (hash ^ b) & t->common_mask & ~(1ul << t->perfect_bit);
+}
+
+
 static struct _pht_table *new_table(
 	struct pht *ht, const struct _pht_table *prev)
 {
@@ -180,7 +187,7 @@ static void table_add(struct _pht_table *t, size_t hash, const void *p)
 	assert(t->table[i] == 0 || t->deleted > 0);
 	t->deleted -= t->table[i];
 
-	t->table[i] = ptr_to_entry(t, p, perfect);
+	t->table[i] = stash_bits(t, hash) | ptr_to_entry(t, p, perfect);
 	assert(is_valid(t->table[i]));
 	t->elems++;
 }
@@ -315,16 +322,17 @@ static void *table_val(
 	assert(it->t != NULL);
 	const struct _pht_table *t = it->t;
 	size_t mask = ((size_t)1 << t->bits) - 1, off = it->off;
+	uintptr_t extra = stash_bits(it->t, hash) | perfect;
 	assert(off >= t->nextmig);
 	do {
 		if(is_valid(t->table[off])
-			&& (t->table[off] & t->common_mask) == perfect)
+			&& (t->table[off] & t->common_mask) == extra)
 		{
 			it->off = off;
 			return entry_to_ptr(t, t->table[off]);
 		}
 		if(t->table[off] == 0) break;
-		perfect = 0;
+		extra &= ~perfect;
 		off = (off + 1) & mask;
 		if(off == 0 && off != it->last) off = t->nextmig;
 	} while(off != it->last);
