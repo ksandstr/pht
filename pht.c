@@ -7,13 +7,16 @@
 #include <ccan/list/list.h>
 #include <ccan/minmax/minmax.h>
 #include <ccan/likely/likely.h>
+#include <ccan/bitops/bitops.h>
 
 #include "pht.h"
 
 
 #define TOMBSTONE (1)
-
-#define MSB(x) (sizeof((x)) * CHAR_BIT - __builtin_clzl((x)) - 1)
+/* this value is convenient because 1ull << 64 is 0, removing a conditional
+ * branch or cmov from all spots that expand the perfect mask.
+ */
+#define NO_PERFECT_BIT (sizeof(uintptr_t) * CHAR_BIT)
 
 
 struct _pht_table
@@ -29,7 +32,9 @@ struct _pht_table
 	 * non-empty slot following an empty.
 	 */
 	size_t chain_start;
+	uintptr_t common_bits, common_mask;
 	short bits;	/* size_log2 */
+	short perfect_bit;
 	uintptr_t table[]
 		__attribute__((aligned(64)));
 };
@@ -81,19 +86,80 @@ static bool is_valid(uintptr_t e) {
 }
 
 
-static struct _pht_table *new_table(struct pht *ht, int sizelog2)
-{
-	assert(sizelog2 >= 0);
-	size_t size = (size_t)1 << sizelog2;
+static inline void *entry_to_ptr(const struct _pht_table *t, uintptr_t e) {
+	return (void *)((e & ~t->common_mask) | t->common_bits);
+}
 
-	struct _pht_table *t = calloc(1, sizeof *t + sizeof(uintptr_t) * size);
+
+static inline uintptr_t ptr_to_entry(
+	const struct _pht_table *t, const void *p, uintptr_t perfect)
+{
+	return ((uintptr_t)p & ~t->common_mask) | perfect;
+}
+
+
+static struct _pht_table *new_table(
+	struct pht *ht, const struct _pht_table *prev)
+{
+	/* find a size that can hold all items in @ht twice before hitting
+	 * t_max_elems().
+	 */
+	size_t target = (ht->elems * 2 * 4) / 3;
+	int bits = ht->elems > 0 ? 31 - bitops_clz32(target) : 0;
+	if((size_t)1 << bits < target) bits++;
+	/* (the t_max_elems formula breaks down below bits < 2.) */
+	assert(bits < 2 || ((size_t)3 << bits) / 4 >= ht->elems * 2);
+	struct _pht_table *t = calloc(1, sizeof *t + (sizeof(uintptr_t) << bits));
 	if(t == NULL) return NULL;
+
 	assert(t->elems == 0);
 	assert(t->deleted == 0);
 	assert(t->nextmig == 0);
 	assert(t->chain_start == 0);
-	t->bits = sizelog2;
+	t->bits = bits;
+	if(prev != NULL) {
+		t->common_mask = prev->common_mask;
+		t->common_bits = prev->common_bits;
+		t->perfect_bit = prev->perfect_bit;
+	} else {
+		t->perfect_bit = NO_PERFECT_BIT;
+		t->common_mask = ~0ul;
+		assert(t->common_bits == 0);
+	}
 	list_add(&ht->tables, &t->link);
+
+	return t;
+}
+
+
+static struct _pht_table *update_common(
+	struct pht *ht, struct _pht_table *t, const void *p)
+{
+	assert((uintptr_t)p != TOMBSTONE);
+	if(ht->elems == 0) {
+		/* de-common exactly one set bit above TOMBSTONE, so that valid
+		 * entries will never look like 0 or TOMBSTONE.
+		 */
+		int b = ffsll((uintptr_t)p & ~3ul) - 1;
+		assert(b >= 0);
+		t->common_mask = ~((uintptr_t)1 << b);
+		t->common_bits = (uintptr_t)p & t->common_mask;
+		t->perfect_bit = 1;
+	} else {
+		if(t->elems > 0) {
+			t = new_table(ht, t);
+			if(t == NULL) return NULL;
+		}
+
+		uintptr_t diffmask = t->common_bits ^ (t->common_mask & (uintptr_t)p);
+		t->common_mask &= ~diffmask;
+		t->common_bits = (uintptr_t)p & t->common_mask;
+		t->perfect_bit = ffsll(t->common_mask & ~1ul) - 1;
+		if(t->perfect_bit < 0) t->perfect_bit = NO_PERFECT_BIT;
+		assert(t->perfect_bit > 0);
+	}
+	assert(((uintptr_t)p & ~t->common_mask) != 0
+		&& ((uintptr_t)p & ~t->common_mask) != TOMBSTONE);
 
 	return t;
 }
@@ -101,22 +167,20 @@ static struct _pht_table *new_table(struct pht *ht, int sizelog2)
 
 static void table_add(struct _pht_table *t, size_t hash, const void *p)
 {
+	assert(t->elems < 1 << t->bits);
+	uintptr_t perfect = 1ul << t->perfect_bit;
 	size_t mask = ((size_t)1 << t->bits) - 1, i = hash & mask;
 	while(is_valid(t->table[i])) {
 		i = (i + 1) & mask;
 		assert(i != (hash & mask));
+		perfect = 0;
 	}
-#if 0
-	if(t->table[i] == TOMBSTONE) {
-		assert(t->deleted > 0);
-		t->deleted--;
-	}
-#else
+
 	assert(t->table[i] <= 1);
 	assert(t->table[i] == 0 || t->deleted > 0);
 	t->deleted -= t->table[i];
-#endif
-	t->table[i] = (uintptr_t)p;
+
+	t->table[i] = ptr_to_entry(t, p, perfect);
 	assert(is_valid(t->table[i]));
 	t->elems++;
 }
@@ -142,19 +206,24 @@ static size_t t_max_fill(const struct _pht_table *t) {
 bool pht_add(struct pht *ht, size_t hash, const void *p)
 {
 	struct _pht_table *t = list_top(&ht->tables, struct _pht_table, link);
-	if(unlikely(t == NULL)) {
-		assert(t == NULL);
-		t = new_table(ht, 0);
-	} else if(t->elems + 1 > t_max_elems(t)
+	if(unlikely(t == NULL)
+		|| t->elems + 1 > t_max_elems(t)
 		|| t->elems + 1 + t->deleted > t_max_fill(t))
 	{
-		/* TODO: find next size that can hold all of them, since the
-		 * fill-condition may be satisfied with a low element count.
+		/* by the time the max-elems condition hits, migration should have
+		 * completed entirely.
 		 */
-		t = new_table(ht, t->bits + 1);
+		assert(t == NULL
+			|| t->elems + 1 <= t_max_elems(t)
+			|| list_tail(&ht->tables, struct _pht_table, link) == t);
+		t = new_table(ht, t);
 	}
 	if(t == NULL) return false;
 	assert(t == list_top(&ht->tables, struct _pht_table, link));
+
+	if(((uintptr_t)p & t->common_mask) != t->common_bits) {
+		t = update_common(ht, t, p);
+	}
 
 	assert(p != NULL);
 	table_add(t, hash, p);
@@ -175,8 +244,9 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 			e = mig->table[off];
 			new_chain |= (e == 0);
 		} while(!is_valid(e) && ++off < lim);
+		assert(lim < mig_size || is_valid(e));
 		if(is_valid(e)) {
-			const void *m = (void *)e;
+			const void *m = entry_to_ptr(mig, e);
 			table_add(t, (*ht->rehash)(m, ht->priv), m);
 			mig->elems--;
 		}
@@ -209,7 +279,9 @@ bool pht_del(struct pht *ht, size_t hash, const void *p)
 }
 
 
-static bool table_next(const struct pht *ht, struct pht_iter *it, size_t hash)
+static bool table_next(
+	const struct pht *ht, struct pht_iter *it, size_t hash,
+	uintptr_t *perfect)
 {
 	it->t = list_next(&ht->tables, it->t, link);
 	if(it->t == NULL) return false;
@@ -218,15 +290,17 @@ static bool table_next(const struct pht *ht, struct pht_iter *it, size_t hash)
 	if(likely(first >= it->t->nextmig)) {
 		it->off = first;
 		it->last = first;
+		*perfect = 1ul << it->t->perfect_bit;
 	} else if(first < it->t->chain_start) {
 		/* first is in an already-migrated chain; skip table. */
-		return table_next(ht, it, hash);
+		return table_next(ht, it, hash, perfect);
 	} else {
 		/* would've started in the migration zone within the existing hash
-		 * chain; skip to nextmig.
+		 * chain; skip to nextmig and clear perfect.
 		 */
 		it->off = it->t->nextmig;
 		it->last = 0;
+		*perfect = 0;
 	}
 
 	assert(it->off >= it->t->nextmig);
@@ -234,24 +308,30 @@ static bool table_next(const struct pht *ht, struct pht_iter *it, size_t hash)
 }
 
 
-static void *table_val(const struct pht *ht, struct pht_iter *it, size_t hash)
+static void *table_val(
+	const struct pht *ht, struct pht_iter *it,
+	size_t hash, uintptr_t perfect)
 {
 	assert(it->t != NULL);
 	const struct _pht_table *t = it->t;
 	size_t mask = ((size_t)1 << t->bits) - 1, off = it->off;
 	assert(off >= t->nextmig);
 	do {
-		if(is_valid(t->table[off])) {
+		if(is_valid(t->table[off])
+			&& (t->table[off] & t->common_mask) == perfect)
+		{
 			it->off = off;
-			return (void *)t->table[off];
+			return entry_to_ptr(t, t->table[off]);
 		}
 		if(t->table[off] == 0) break;
+		perfect = 0;
 		off = (off + 1) & mask;
 		if(off == 0 && off != it->last) off = t->nextmig;
 	} while(off != it->last);
 
-	if(table_next(ht, it, hash)) return table_val(ht, it, hash);
-	else {
+	if(table_next(ht, it, hash, &perfect)) {
+		return table_val(ht, it, hash, perfect);
+	} else {
 		/* done. */
 		assert(it->t == NULL);
 		return NULL;
@@ -269,7 +349,7 @@ void *pht_firstval(const struct pht *ht, struct pht_iter *it, size_t hash)
 	it->off = hash & mask;
 	it->last = it->off;
 	it->hash = hash;
-	return table_val(ht, it, hash);
+	return table_val(ht, it, hash, 1ul << it->t->perfect_bit);
 }
 
 
@@ -277,17 +357,18 @@ void *pht_nextval(const struct pht *ht, struct pht_iter *it, size_t hash)
 {
 	if(it->t == NULL) return NULL;
 	it->off = (it->off + 1) & ((1u << it->t->bits) - 1);
+	uintptr_t perf = 0;
 	if(it->off == it->last
 		|| (it->off == 0 && it->t->chain_start > 0)
 		|| (it->off == 0 && it->last <= it->t->nextmig))
 	{
 		/* end of probe */
-		if(!table_next(ht, it, hash)) return NULL;
+		if(!table_next(ht, it, hash, &perf)) return NULL;
 	} else if(it->off == 0) {
 		/* wrap around */
 		it->off = it->t->nextmig;
 	}
-	return table_val(ht, it, hash);
+	return table_val(ht, it, hash, perf);
 }
 
 
@@ -304,7 +385,7 @@ void pht_delval(struct pht *ht, struct pht_iter *it)
 		&& it->t != list_top(&ht->tables, struct _pht_table, link))
 	{
 		struct _pht_table *dead = it->t;
-		table_next(ht, it, it->hash);
+		table_next(ht, it, it->hash, &(uintptr_t){ 0 });
 		list_del_from(&ht->tables, &dead->link);
 		free(dead);
 	}
@@ -329,9 +410,8 @@ static void *table_val_all(const struct pht *ht, struct pht_iter *it)
 	size_t off = it->off, last = (size_t)1 << it->t->bits;
 	do {
 		if(is_valid(it->t->table[off])) {
-			/* TODO: demunge the pointer */
 			it->off = off;
-			return (void *)it->t->table[off];
+			return entry_to_ptr(it->t, it->t->table[off]);
 		}
 	} while(++off != last);
 	return table_next_all(ht, it) ? table_val_all(ht, it) : NULL;
