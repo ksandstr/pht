@@ -10,6 +10,7 @@
 #include <ccan/tap/tap.h>
 #include <ccan/hash/hash.h>
 #include <ccan/array_size/array_size.h>
+#include <ccan/str/str.h>
 
 #include "pht.h"
 
@@ -23,11 +24,11 @@ static size_t rehash_str(const void *p, void *priv) {
 
 
 static bool cmp_str(const void *cand, void *key) {
-	if(cmp_verbose) {
+	if(cmp_verbose && !streq(cand, key)) {
 		diag("%s: cand=`%s', key=`%s'", __func__,
 			(const char *)cand, (char *)key);
 	}
-	return strcmp(cand, key) == 0;
+	return streq(cand, key);
 }
 
 
@@ -59,8 +60,17 @@ int main(void)
 		"mutex", "mutices", "mutexes", "gecko", "newt", "rothe",
 		"iguana", "woodchuck", "oracle", "vlad", "rodney",
 		"the wood nymph zaps a wand of death! -more-",
+
+		"bean", "warp", "zonk", "awk", "sed", "grep",
+		"trash", "junk", "guff", "dross", "garbo",
+		"faff", "wank", "toss", "piffle", "drivel",
+		"blather", "hogwash", "bunk", "balderdash", "hokum", "twaddle",
+
+		"it's a man's life in the british dental association",
+		"guitar", "violin", "cello", "bassoon", "tuba", "bagpipe",
+		"mandolin", "piano", "saxophone", "kazoo", "otamatone",
 	};
-	assert(ARRAY_SIZE(strs) == 37);	/* because prime. */
+	assert(ARRAY_SIZE(strs) == 71);	/* because prime. */
 
 	struct pht ht = PHT_INITIALIZER(ht, &rehash_str, NULL);
 	ok1(pht_count(&ht) == 0);
