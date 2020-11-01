@@ -6,6 +6,7 @@
 #include <limits.h>
 #include <ccan/list/list.h>
 #include <ccan/minmax/minmax.h>
+#include <ccan/likely/likely.h>
 
 #include "pht.h"
 
@@ -25,6 +26,10 @@ struct _pht_table
 	 * ignored by iteration and deletion.
 	 */
 	size_t nextmig;
+	/* start of the first hash chain beginning in the migration zone, i.e. a
+	 * non-empty slot following an empty.
+	 */
+	size_t chain_start;
 	short bits;	/* size_log2 */
 	uintptr_t table[]
 		__attribute__((aligned(64)));
@@ -77,6 +82,7 @@ static struct _pht_table *new_table(struct pht *ht, size_t size)
 	assert(t->elems == 0);
 	assert(t->deleted == 0);
 	assert(t->nextmig == 0);
+	assert(t->chain_start == 0);
 	t->bits = bits;
 	list_add(&ht->tables, &t->link);
 
@@ -150,20 +156,24 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 		assert(mig->elems > 0);
 		const int cacheline = 64 / sizeof(uintptr_t);
 		uintptr_t e;
+		bool new_chain = false;
 		size_t off = mig->nextmig, mig_size = (size_t)1 << mig->bits,
 			lim = max(mig_size, (off + cacheline - 1) & ~(cacheline - 1));
 		assert(lim <= mig_size);
 		do {
 			assert(off < mig_size);
 			e = mig->table[off];
+			new_chain |= (e == 0);
 		} while(!is_valid(e) && ++off < lim);
 		if(is_valid(e)) {
 			const void *m = (void *)e;
 			table_add(t, (*ht->rehash)(m, ht->priv), m);
 			mig->elems--;
 		}
-		if(mig->elems > 0 && off + 1 < mig_size) mig->nextmig = off + 1;
-		else {
+		if(mig->elems > 0 && off + 1 < mig_size) {
+			mig->nextmig = off + 1;
+			if(new_chain) mig->chain_start = off;
+		} else {
 			/* dispose of old table. */
 			list_del_from(&ht->tables, &mig->link);
 			free(mig);
@@ -196,13 +206,21 @@ static bool table_next(const struct pht *ht, struct pht_iter *it, size_t hash)
 
 	size_t lim = (size_t)1 << it->t->bits,
 		mask = lim - 1, first = hash & mask;
-	it->last = first < it->t->nextmig ? lim : first;
-	for(it->off = first; it->off < it->t->nextmig; it->off++) {
-		if(it->t->table[it->off] == 0) {
-			return table_next(ht, it, hash);
-		}
+	if(likely(first >= it->t->nextmig)) {
+		it->off = first;
+		it->last = first;
+	} else if(first < it->t->chain_start) {
+		/* first is in an already-migrated chain; skip table. */
+		return table_next(ht, it, hash);
+	} else {
+		/* would've started in the migration zone within the existing hash
+		 * chain; skip to nextmig.
+		 */
+		it->off = it->t->nextmig;
+		it->last = lim;
 	}
 
+	assert(it->off >= it->t->nextmig);
 	return true;
 }
 
@@ -210,19 +228,17 @@ static bool table_next(const struct pht *ht, struct pht_iter *it, size_t hash)
 static void *table_val(const struct pht *ht, struct pht_iter *it, size_t hash)
 {
 	assert(it->t != NULL);
-	struct _pht_table *t = it->t;
+	const struct _pht_table *t = it->t;
 	size_t mask = ((size_t)1 << t->bits) - 1, off = it->off;
-	while(off < t->nextmig && t->table[off] != 0) off++;
-	if(off >= t->nextmig) {
-		do {
-			if(is_valid(t->table[off])) {
-				it->off = off;
-				return (void *)t->table[off];
-			}
-			if(t->table[off] == 0) break;
-			off = (off + 1) & mask;
-		} while(off != it->last);
-	}
+	assert(off >= t->nextmig);
+	do {
+		if(is_valid(t->table[off])) {
+			it->off = off;
+			return (void *)t->table[off];
+		}
+		if(t->table[off] == 0) break;
+		off = (off + 1) & mask;
+	} while(off != it->last);
 
 	if(table_next(ht, it, hash)) return table_val(ht, it, hash);
 	else {
@@ -252,6 +268,10 @@ void *pht_nextval(const struct pht *ht, struct pht_iter *it, size_t hash)
 	if(it->t == NULL) return NULL;
 	it->off = (it->off + 1) & ((1u << it->t->bits) - 1);
 	if(it->off == it->last && !table_next(ht, it, hash)) return NULL;
+	if(it->off == 0) {
+		if(it->t->chain_start > 0 && !table_next(ht, it, hash)) return NULL;
+		else it->off = it->t->nextmig;
+	}
 	return table_val(ht, it, hash);
 }
 
