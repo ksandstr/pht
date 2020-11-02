@@ -249,6 +249,7 @@ static void *table_val(const struct pht *ht, struct pht_iter *it, size_t hash)
 		}
 		if(t->table[off] == 0) break;
 		off = (off + 1) & mask;
+		if(off == 0 && off != it->last) off = t->nextmig;
 	} while(off != it->last);
 
 	if(table_next(ht, it, hash)) return table_val(ht, it, hash);
