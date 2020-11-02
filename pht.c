@@ -216,8 +216,7 @@ static bool table_next(const struct pht *ht, struct pht_iter *it, size_t hash)
 	it->t = list_next(&ht->tables, it->t, link);
 	if(it->t == NULL) return false;
 
-	size_t lim = (size_t)1 << it->t->bits,
-		mask = lim - 1, first = hash & mask;
+	size_t mask = ((size_t)1 << it->t->bits) - 1, first = hash & mask;
 	if(likely(first >= it->t->nextmig)) {
 		it->off = first;
 		it->last = first;
@@ -229,7 +228,7 @@ static bool table_next(const struct pht *ht, struct pht_iter *it, size_t hash)
 		 * chain; skip to nextmig.
 		 */
 		it->off = it->t->nextmig;
-		it->last = lim;
+		it->last = 0;
 	}
 
 	assert(it->off >= it->t->nextmig);
@@ -279,10 +278,15 @@ void *pht_nextval(const struct pht *ht, struct pht_iter *it, size_t hash)
 {
 	if(it->t == NULL) return NULL;
 	it->off = (it->off + 1) & ((1u << it->t->bits) - 1);
-	if(it->off == it->last && !table_next(ht, it, hash)) return NULL;
-	if(it->off == 0) {
-		if(it->t->chain_start > 0 && !table_next(ht, it, hash)) return NULL;
-		else it->off = it->t->nextmig;
+	if(it->off == it->last
+		|| (it->off == 0 && it->t->chain_start > 0)
+		|| (it->off == 0 && it->last <= it->t->nextmig))
+	{
+		/* end of probe */
+		if(!table_next(ht, it, hash)) return NULL;
+	} else if(it->off == 0) {
+		/* wrap around */
+		it->off = it->t->nextmig;
 	}
 	return table_val(ht, it, hash);
 }
