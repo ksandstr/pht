@@ -11,7 +11,6 @@
 #include "pht.h"
 
 
-#define MIN_TABLE (64 / sizeof(uintptr_t))
 #define TOMBSTONE (1)
 
 #define MSB(x) (sizeof((x)) * CHAR_BIT - __builtin_clzl((x)) - 1)
@@ -82,12 +81,10 @@ static bool is_valid(uintptr_t e) {
 }
 
 
-static struct _pht_table *new_table(struct pht *ht, size_t size)
+static struct _pht_table *new_table(struct pht *ht, int sizelog2)
 {
-	int bits = MSB(size);
-	if(1ull << bits < size) bits++;
-	assert(1ull << bits >= size);
-	size = 1ull << bits;
+	assert(sizelog2 >= 0);
+	size_t size = (size_t)1 << sizelog2;
 
 	struct _pht_table *t = calloc(1, sizeof *t + sizeof(uintptr_t) * size);
 	if(t == NULL) return NULL;
@@ -95,7 +92,7 @@ static struct _pht_table *new_table(struct pht *ht, size_t size)
 	assert(t->deleted == 0);
 	assert(t->nextmig == 0);
 	assert(t->chain_start == 0);
-	t->bits = bits;
+	t->bits = sizelog2;
 	list_add(&ht->tables, &t->link);
 
 	return t;
@@ -145,14 +142,16 @@ static size_t t_max_fill(const struct _pht_table *t) {
 bool pht_add(struct pht *ht, size_t hash, const void *p)
 {
 	struct _pht_table *t = list_top(&ht->tables, struct _pht_table, link);
-	if(list_empty(&ht->tables)) {
+	if(unlikely(t == NULL)) {
 		assert(t == NULL);
-		t = new_table(ht, MIN_TABLE);
+		t = new_table(ht, 0);
 	} else if(t->elems + 1 > t_max_elems(t)
 		|| t->elems + 1 + t->deleted > t_max_fill(t))
 	{
-		size_t newlen = (size_t)1 << (t->bits + 1);
-		t = new_table(ht, newlen);
+		/* TODO: find next size that can hold all of them, since the
+		 * fill-condition may be satisfied with a low element count.
+		 */
+		t = new_table(ht, t->bits + 1);
 	}
 	if(t == NULL) return false;
 	assert(t == list_top(&ht->tables, struct _pht_table, link));
@@ -166,11 +165,10 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 	assert(mig != NULL);
 	if(mig != t) {
 		assert(mig->elems > 0);
-		const int cacheline = 64 / sizeof(uintptr_t);
 		uintptr_t e;
 		bool new_chain = false;
 		size_t off = mig->nextmig, mig_size = (size_t)1 << mig->bits,
-			lim = max(mig_size, (off + cacheline - 1) & ~(cacheline - 1));
+			lim = mig_size;	/* TODO: scanning policy? */
 		assert(lim <= mig_size);
 		do {
 			assert(off < mig_size);
