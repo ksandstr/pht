@@ -59,8 +59,20 @@ void pht_clear(struct pht *ht)
 }
 
 
-struct pht *pht_check(const struct pht *ht, const char *abortstr) {
-	/* TODO: the rest of the fucking owl */
+struct pht *pht_check(const struct pht *ht, const char *abortstr)
+{
+#ifndef NDEBUG
+	ssize_t total = ht->elems;
+	const struct _pht_table *t;
+	list_for_each(&ht->tables, t, link) {
+		total -= t->elems;
+		assert(t->deleted <= (size_t)1 << t->bits);
+	}
+	assert(total == 0);
+
+	/* TODO: add more, use @abortstr somehow */
+#endif
+
 	return (struct pht *)ht;
 }
 

@@ -26,6 +26,7 @@ int main(void)
 	plan_tests(4);
 
 	struct pht ht = PHT_INITIALIZER(ht, &rehash_str, NULL);
+	pht_check(&ht, "fresh");
 	ok1(pht_count(&ht) == 0);
 	const char *foo = "my ass-clap keeps alerting the bees!";
 	size_t hash = rehash_str(foo, NULL);
@@ -34,6 +35,7 @@ int main(void)
 	struct pht_iter it;
 	ok1(pht_firstval(&ht, &it, hash) == NULL);
 	ok1(!pht_del(&ht, hash, foo));
+	pht_check(&ht, "after non-deletion");
 
 	return exit_status();
 }

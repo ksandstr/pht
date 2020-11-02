@@ -70,7 +70,7 @@ int main(void)
 	for(int i=0; i < ARRAY_SIZE(strs); i++) {
 		size_t hash = rehash_str(strs[i], NULL);
 		//diag("str=`%s', hash=%#zx", strs[i], hash);
-		bool ok = pht_add(&ht, hash, strs[i]);
+		bool ok = pht_add(pht_check(&ht, NULL), hash, strs[i]);
 		if(!ok) {
 			diag("add failed at i=%d", i);
 			adds_ok = false;
@@ -91,6 +91,7 @@ int main(void)
 			}
 		}
 	}
+	pht_check(&ht, NULL);
 	ok1(adds_ok);
 	ok1(counts_ok);
 	ok1(total_ok);
@@ -100,9 +101,11 @@ int main(void)
 	bool dels_ok = true;
 	int n_removed = 0;
 	for(int i=1; i < ARRAY_SIZE(strs); i += 2) {
-		bool ok = pht_del(&ht, rehash_str(strs[i], NULL), strs[i]);
+		bool ok = pht_del(pht_check(&ht, NULL),
+			rehash_str(strs[i], NULL), strs[i]);
 		if(!ok) dels_ok = false; else n_removed++;
 	}
+	pht_check(&ht, NULL);
 	ok1(dels_ok);
 	ok1(pht_count(&ht) == ARRAY_SIZE(strs) - n_removed);
 
@@ -173,7 +176,7 @@ int main(void)
 			//diag("after: str=`%s', cand=`%s'", strs[i], (const char *)cand);
 			if(streq(cand, strs[i])) {
 				got++;
-				pht_delval(&ht, &it);
+				pht_delval(pht_check(&ht, NULL), &it);
 			}
 		}
 		if(got != 1) {
@@ -181,6 +184,7 @@ int main(void)
 			clean_ok = false;
 		}
 	}
+	pht_check(&ht, NULL);
 	ok1(clean_ok);
 	ok1(pht_count(&ht) == 0);
 
