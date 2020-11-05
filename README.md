@@ -3,7 +3,9 @@ tl;dr: Progressively rebuilt hash table. Interface similar to CCAN htable.
 GPLv3-or-later.
 
 A more thorough treatment of the design should appear here at a later date,
-but for now just use the source.
+but for now just use the source. There are some tests and a big old benchmark
+which produces meaningful results only when built under `-O2 -DNDEBUG` in
+CFLAGS, and run using the script provided.
 
 The core idea, due to someone on Reddit years ago, is that of handling hash
 table growth progressively to gain a far better maximum bound for adding an
@@ -24,10 +26,8 @@ is nevertheless lacking in guarantees wrt space and time. So this project
 exists also as a vehicle for exploring that, before lfht gets a proper refit,
 before it gets applied in the transactional memory thing.
 
-Further development, such as introduction of the common-bits and perfect-bit
-mechanisms from CCAN htable, should put pht on par wrt number of comparisons
-in the lookup benchmark and the total number of cycles in the mixed add/del
-benchmark, and at most a tad over twice as slow in the negative lookup
-benchmark; while retaining the add-side latency advantage.
+Further development, such as introduction of a smarter rehashing algorithm,
+should put pht farther ahead of CCAN htable in the add benchmark, while
+staying somewhat worse than parity on lookups and deletions.
 
   -- Kalle A. Sandström <ksandstr@iki.fi>
