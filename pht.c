@@ -101,13 +101,52 @@ void pht_clear(struct pht *ht)
 struct pht *pht_check(const struct pht *ht, const char *abortstr)
 {
 #ifndef NDEBUG
-	ssize_t total = ht->elems;
+	ssize_t phantom = ht->elems;
 	const struct _pht_table *t;
 	list_for_each(&ht->tables, t, link) {
-		total -= t->elems;
+		phantom -= t->elems;
 		assert(t->deleted <= (size_t)1 << t->bits);
+
+		size_t deleted = 0, empty = 0, item = 0,
+			mask = ((size_t)1 << t->bits) - 1;
+		uintptr_t perf_mask = 1ul << t->perfect_bit;
+		for(size_t i=0; i < (size_t)1 << t->bits; i++) {
+			uintptr_t e = t->table[i];
+			switch(e) {
+				case 0: empty++; break;
+				case TOMBSTONE: deleted++; break;
+				default:
+					assert(is_valid(e));
+					if(i >= t->nextmig) item++; else empty++;
+			}
+
+			/* (we require these things of items behind the migration horizon,
+			 * too, for the purpose of catching memory corruption there as
+			 * well. performance junkies should disagree.)
+			 */
+			if(is_valid(e)) {
+				uintptr_t extra = e & t->common_mask;
+				size_t hash = (*ht->rehash)(entry_to_ptr(t, e), ht->priv);
+
+				assert((extra & ~perf_mask) == stash_bits(t, hash));
+				assert(!!(e & perf_mask) == (i == (hash & mask)));
+				if(~e & perf_mask) {
+					/* a contiguous hash chain exists from the home slot to
+					 * `i'.
+					 */
+					size_t slot = hash & mask;
+					while(slot != i) {
+						assert(t->table[slot] != 0);
+						slot = (slot + 1) & (((size_t)1 << t->bits) - 1);
+					}
+				}
+			}
+		}
+		assert(deleted == t->deleted);
+		assert(item == t->elems);
+		assert(empty == ((size_t)1 << t->bits) - t->deleted - t->elems);
 	}
-	assert(total == 0);
+	assert(phantom == 0);
 
 	/* TODO: add more, use @abortstr somehow */
 #endif

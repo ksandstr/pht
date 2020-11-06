@@ -30,6 +30,11 @@ extern void pht_init(struct pht *ht,
 
 extern size_t pht_count(const struct pht *ht);
 extern void pht_clear(struct pht *ht);
+
+/* heavyweight fsck-like operation on @ht, useful for catching memory
+ * corruption not found by valgrind. not compiled under NDEBUG. returns @ht
+ * always.
+ */
 extern struct pht *pht_check(const struct pht *ht, const char *abortstr);
 
 /* NOTE: due to effects of progressive migration, calling pht_add()
