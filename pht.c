@@ -40,6 +40,41 @@ struct _pht_table
 };
 
 
+static bool is_valid(uintptr_t e) {
+	return e != 0 && e != TOMBSTONE;
+}
+
+
+static size_t t_max_elems(const struct _pht_table *t) {
+	return ((size_t)3 << t->bits) / 4;
+}
+
+
+static size_t t_max_fill(const struct _pht_table *t) {
+	/* 0.90625 is close enough to 9/10, and computes faster. */
+	return ((size_t)29 << t->bits) / 32;
+}
+
+
+static inline void *entry_to_ptr(const struct _pht_table *t, uintptr_t e) {
+	return (void *)((e & ~t->common_mask) | t->common_bits);
+}
+
+
+static inline uintptr_t ptr_to_entry(
+	const struct _pht_table *t, const void *p, uintptr_t perfect)
+{
+	return ((uintptr_t)p & ~t->common_mask) | perfect;
+}
+
+
+static inline uintptr_t stash_bits(const struct _pht_table *t, size_t hash) {
+	int d = t->bits;
+	size_t b = (hash << d) | (hash >> (sizeof hash * CHAR_BIT - d));
+	return (hash ^ b) & t->common_mask & ~(1ul << t->perfect_bit);
+}
+
+
 void pht_init(struct pht *ht,
 	size_t (*rehash)(const void *elem, void *priv), void *priv)
 {
@@ -78,30 +113,6 @@ struct pht *pht_check(const struct pht *ht, const char *abortstr)
 #endif
 
 	return (struct pht *)ht;
-}
-
-
-static bool is_valid(uintptr_t e) {
-	return e != 0 && e != TOMBSTONE;
-}
-
-
-static inline void *entry_to_ptr(const struct _pht_table *t, uintptr_t e) {
-	return (void *)((e & ~t->common_mask) | t->common_bits);
-}
-
-
-static inline uintptr_t ptr_to_entry(
-	const struct _pht_table *t, const void *p, uintptr_t perfect)
-{
-	return ((uintptr_t)p & ~t->common_mask) | perfect;
-}
-
-
-static inline uintptr_t stash_bits(const struct _pht_table *t, size_t hash) {
-	int d = t->bits;
-	size_t b = (hash << d) | (hash >> (sizeof hash * CHAR_BIT - d));
-	return (hash ^ b) & t->common_mask & ~(1ul << t->perfect_bit);
 }
 
 
@@ -195,27 +206,17 @@ static void table_add(struct _pht_table *t, size_t hash, const void *p)
 
 bool pht_copy(struct pht *dst, const struct pht *src)
 {
+	/* TODO */
 	return true;
-}
-
-
-static size_t t_max_elems(const struct _pht_table *t) {
-	return ((size_t)3 << t->bits) / 4;
-}
-
-
-static size_t t_max_fill(const struct _pht_table *t) {
-	/* 0.90625 is close enough to 9/10, and computes faster. */
-	return ((size_t)29 << t->bits) / 32;
 }
 
 
 bool pht_add(struct pht *ht, size_t hash, const void *p)
 {
 	struct _pht_table *t = list_top(&ht->tables, struct _pht_table, link);
-	if(unlikely(t == NULL)
+	if(unlikely(t == NULL
 		|| t->elems + 1 > t_max_elems(t)
-		|| t->elems + 1 + t->deleted > t_max_fill(t))
+		|| t->elems + 1 + t->deleted > t_max_fill(t)))
 	{
 		/* by the time the max-elems condition hits, migration should have
 		 * completed entirely.
@@ -298,7 +299,7 @@ static bool table_next(
 	if(it->t == NULL) return false;
 
 	size_t mask = ((size_t)1 << it->t->bits) - 1, first = hash & mask;
-	if(likely(first >= it->t->nextmig)) {
+	if(first >= it->t->nextmig) {
 		it->off = first;
 		it->last = first;
 		*perfect = 1ul << it->t->perfect_bit;
@@ -354,7 +355,7 @@ static void *table_val(
 void *pht_firstval(const struct pht *ht, struct pht_iter *it, size_t hash)
 {
 	it->t = list_top(&ht->tables, struct _pht_table, link);
-	if(it->t == NULL) return NULL;
+	if(unlikely(it->t == NULL)) return NULL;
 	assert(it->t->nextmig == 0);
 
 	size_t mask = ((size_t)1 << it->t->bits) - 1;
@@ -433,7 +434,7 @@ static void *table_val_all(const struct pht *ht, struct pht_iter *it)
 void *pht_first(const struct pht *ht, struct pht_iter *it)
 {
 	it->t = list_top(&ht->tables, struct _pht_table, link);
-	if(it->t == NULL) return NULL;
+	if(unlikely(it->t == NULL)) return NULL;
 	assert(it->t->nextmig == 0);
 
 	it->off = 0; it->last = 0; it->hash = 0;
@@ -451,5 +452,6 @@ void *pht_next(const struct pht *ht, struct pht_iter *it)
 
 void *pht_prev(const struct pht *ht, struct pht_iter *it)
 {
+	/* TODO */
 	return NULL;
 }

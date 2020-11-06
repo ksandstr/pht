@@ -1,7 +1,7 @@
 
 CCAN_DIR=~/src/ccan
 
-CFLAGS:=-O2 -std=gnu11 -Wall -g -march=native \
+CFLAGS:=-Og -std=gnu11 -Wall -g -march=native \
 	-D_GNU_SOURCE -I $(CCAN_DIR) -I $(abspath .) \
 	#-DCCAN_LIST_DEBUG=1 #-DDEBUG_ME_HARDER
 
@@ -16,7 +16,7 @@ clean:
 
 
 distclean: clean
-	@rm -f bench tags
+	@rm -f bench tags core
 	@rm -rf .deps
 
 

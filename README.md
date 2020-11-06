@@ -1,6 +1,6 @@
 
-tl;dr: Progressively rebuilt hash table. Interface similar to CCAN htable.
-GPLv3-or-later.
+tl;dr: Progressively rebuilt hash table. Interface similar to CCAN htable. Not
+friendly to valgrind or libgc due to pointer munging. GPLv3-or-later.
 
 A more thorough treatment of the design should appear here at a later date,
 but for now just use the source. There are some tests and a big old benchmark
