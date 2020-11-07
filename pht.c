@@ -63,6 +63,16 @@ static uintptr_t t_perfect_mask(const struct _pht_table *t) {
 }
 
 
+static inline size_t t_bucket(const struct _pht_table *t, size_t hash) {
+	/* increase at the low end to optimize rehash avoidance. since many hash
+	 * functions are stronger at the low end, rotate to the right 17 bits
+	 * (arbitrarily) and xor it in.
+	 */
+	hash ^= (hash >> 17) | (hash << (sizeof hash * CHAR_BIT - 17));
+	return t->bits > 0 ? hash >> (sizeof hash * CHAR_BIT - t->bits) : 0;
+}
+
+
 static inline void *entry_to_ptr(const struct _pht_table *t, uintptr_t e) {
 	return (void *)((e & ~t->common_mask) | t->common_bits);
 }
@@ -76,9 +86,11 @@ static inline uintptr_t ptr_to_entry(
 
 
 static inline uintptr_t stash_bits(const struct _pht_table *t, size_t hash) {
-	int d = t->bits;
-	size_t b = (hash << d) | (hash >> (sizeof hash * CHAR_BIT - d));
-	return (hash ^ b) & t->common_mask & ~t_perfect_mask(t);
+	/* same reason as t_bucket(), but this time because most of the common
+	 * bits are up high. rotation distance picked arbitrarily.
+	 */
+	hash ^= (hash >> 14) | (hash << (sizeof hash * CHAR_BIT - 14));
+	return hash & t->common_mask & ~t_perfect_mask(t);
 }
 
 
@@ -114,8 +126,7 @@ struct pht *pht_check(const struct pht *ht, const char *abortstr)
 		phantom -= t->elems;
 		assert(t->deleted <= (size_t)1 << t->bits);
 
-		size_t deleted = 0, empty = 0, item = 0,
-			mask = ((size_t)1 << t->bits) - 1;
+		size_t deleted = 0, empty = 0, item = 0;
 		uintptr_t perf_mask = t_perfect_mask(t);
 		for(size_t i=0; i < (size_t)1 << t->bits; i++) {
 			uintptr_t e = t->table[i];
@@ -136,12 +147,12 @@ struct pht *pht_check(const struct pht *ht, const char *abortstr)
 				size_t hash = (*ht->rehash)(entry_to_ptr(t, e), ht->priv);
 
 				assert((extra & ~perf_mask) == stash_bits(t, hash));
-				assert(!!(e & perf_mask) == (i == (hash & mask)));
+				assert(!!(e & perf_mask) == (i == t_bucket(t, hash)));
 				if(~e & perf_mask) {
 					/* a contiguous hash chain exists from the home slot to
 					 * `i'.
 					 */
-					size_t slot = hash & mask;
+					size_t slot = t_bucket(t, hash);
 					while(slot != i) {
 						assert(t->table[slot] != 0);
 						slot = (slot + 1) & (((size_t)1 << t->bits) - 1);
@@ -240,7 +251,7 @@ static void table_add(struct _pht_table *t, size_t hash, const void *p)
 	assert(t->elems < 1 << t->bits);
 	uintptr_t perfect = t_perfect_mask(t),
 		e = stash_bits(t, hash) | ptr_to_entry(t, p);
-	size_t mask = ((size_t)1 << t->bits) - 1, i = hash & mask;
+	size_t mask = ((size_t)1 << t->bits) - 1, i = t_bucket(t, hash);
 	if(is_valid(t->table[i]) && (~t->table[i] & perfect)) {
 		/* use an imperfect entry's slot to store @p perfectly, then
 		 * reinsert the previous item somewhere down the hash chain.
@@ -253,7 +264,7 @@ static void table_add(struct _pht_table *t, size_t hash, const void *p)
 	}
 	while(is_valid(t->table[i])) {
 		i = (i + 1) & mask;
-		assert(i != (hash & mask));
+		assert(i != t_bucket(t, hash));
 		perfect = 0;
 	}
 
@@ -389,7 +400,7 @@ static bool table_next(
 	if(it->t == NULL) return false;
 
 	assert(it->hash == hash);
-	size_t mask = ((size_t)1 << it->t->bits) - 1, first = hash & mask;
+	size_t first = t_bucket(it->t, hash);
 	if(first >= it->t->nextmig) {
 		it->off = first;
 		it->last = first;
@@ -418,7 +429,7 @@ static void *table_val(
 	assert(it->t != NULL);
 	assert(it->hash == hash);
 	const struct _pht_table *t = it->t;
-	size_t mask = ((size_t)1 << t->bits) - 1, off = it->off;
+	size_t off = it->off;
 	uintptr_t extra = stash_bits(it->t, hash) | perfect;
 	assert(off >= t->nextmig);
 	do {
@@ -430,7 +441,7 @@ static void *table_val(
 		}
 		if(t->table[off] == 0) break;
 		extra &= ~perfect;
-		off = (off + 1) & mask;
+		off = (off + 1) & (((size_t)1 << t->bits) - 1);
 		if(off == 0 && off != it->last) {
 			if(t->chain_start > 0) break;
 			off = t->nextmig;
@@ -453,8 +464,7 @@ void *pht_firstval(const struct pht *ht, struct pht_iter *it, size_t hash)
 	if(unlikely(it->t == NULL)) return NULL;
 	assert(it->t->nextmig == 0);
 
-	size_t mask = ((size_t)1 << it->t->bits) - 1;
-	it->off = hash & mask;
+	it->off = t_bucket(it->t, hash);
 	it->last = it->off;
 	it->hash = hash;
 	return table_val(ht, it, hash, t_perfect_mask(it->t));
@@ -464,7 +474,7 @@ void *pht_firstval(const struct pht *ht, struct pht_iter *it, size_t hash)
 void *pht_nextval(const struct pht *ht, struct pht_iter *it, size_t hash)
 {
 	if(it->t == NULL) return NULL;
-	it->off = (it->off + 1) & ((1u << it->t->bits) - 1);
+	it->off = (it->off + 1) & (((size_t)1 << it->t->bits) - 1);
 	uintptr_t perf = 0;
 	if(it->off == it->last
 		|| (it->off == 0 && it->t->chain_start > 0)
