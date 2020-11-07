@@ -33,6 +33,7 @@ struct _pht_table
 	uintptr_t common_bits, common_mask;
 	uint8_t bits;	/* size_log2 */
 	uint8_t perfect_bit;
+
 	uintptr_t table[]
 		__attribute__((aligned(64)));
 };
@@ -278,6 +279,100 @@ static void table_add(struct _pht_table *t, size_t hash, const void *p)
 }
 
 
+/* migrate @mig->table[off] == @e to @t while avoiding a rehash. returns false
+ * if the item must be rehashed and reinserted, and true otherwise. caller
+ * must adjust @mig->elems when successful.
+ */
+static bool fast_migrate(struct _pht_table *t,
+	struct _pht_table *mig, uintptr_t e, size_t off)
+{
+	assert(t->elems < (size_t)1 << t->bits);
+	assert(t->nextmig == 0);
+	/* compatibility criteria between the two tables: the target table must
+	 * have a common_mask no heavier than the source, so that extra bits can
+	 * be copied over without rehashing. asserted because this should be
+	 * guaranteed by update_common() and new_table().
+	 */
+	assert((t->common_mask & ~mig->common_mask) == 0);
+	/* perfect-bits should also be compatible by either being the same bit, by
+	 * the target not having a perfect bit, or by having the source table's
+	 * perfect bit unmasked in the destination. asserted because that's what
+	 * the algorithm expects.
+	 */
+	assert(t->perfect_bit == NO_PERFECT_BIT
+		|| t->perfect_bit == mig->perfect_bit
+		|| (~t->common_mask & t_perfect_mask(mig)));
+	size_t t_mask = ((size_t)1 << t->bits) - 1;
+	uintptr_t perfect;
+	if(e & t_perfect_mask(mig)) {
+		if(t->bits <= mig->bits) {
+			/* perfect items may migrate to same-sized and smaller tables
+			 * directly, losing the perfect bit only when the sole home
+			 * position is occupied.
+			 */
+			int scale = mig->bits - t->bits;
+			off >>= scale;
+			perfect = t_perfect_mask(t);
+		} else {
+			/* a perfect item may also migrate to a position after its home
+			 * slot range in a larger table iff those slots are already
+			 * non-empty. we cannot use a tombstone slot in that range, or the
+			 * last slot, because it's not known if the perfect bit should be
+			 * set.
+			 */
+			if(t->bits < 2) {
+				/* this breaks down when there are exactly two slots;
+				 * then we'd get the perfect bit wrong half the time.
+				 */
+				return false;
+			}
+			int scale = t->bits - mig->bits;
+			assert((off + 1) << scale <= (size_t)1 << t->bits);
+			for(size_t i = off << scale; i < (off + 1) << scale; i++) {
+				/* to make that happen, let's instead add tombstones so that
+				 * all perfect items migrate without rehash even if that loses
+				 * perfect until next time.
+				 */
+				if(t->table[i] == 0) {
+					t->table[i] = TOMBSTONE;
+					t->deleted++;
+				}
+			}
+			off = ((off + 1) << scale) & t_mask;
+			perfect = 0;
+		}
+	} else {
+		/* imperfect items always migrate by rehash. but stay tuned. */
+		return false;
+	}
+
+	/* brekkie's up, ya slack cunt */
+	assert(off < (size_t)1 << t->bits);
+	e = (e & t->common_mask & ~t_perfect_mask(t))
+		| (((e & ~mig->common_mask) | mig->common_bits) & ~t->common_mask);
+	if(is_valid(t->table[off]) && (~t->table[off] & perfect)) {
+		/* same bump logic as in table_add() */
+		assert(~t->table[off] & t_perfect_mask(t));
+		assert(perfect == t_perfect_mask(t));
+		uintptr_t olde = t->table[off];
+		t->table[off] = e | perfect;
+		e = olde;
+		perfect = 0;
+		off = (off + 1) & t_mask;
+	}
+	assert(~e & t_perfect_mask(t));
+	while(is_valid(t->table[off])) {
+		perfect = 0;
+		off = (off + 1) & t_mask;
+	}
+	t->deleted -= t->table[off];
+	t->table[off] = e | perfect;
+	t->elems++;
+
+	return true;
+}
+
+
 bool pht_copy(struct pht *dst, const struct pht *src)
 {
 	pht_init(dst, src->rehash, src->priv);
@@ -346,8 +441,20 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 		} while(!is_valid(e) && ++off < lim);
 		assert(lim < mig_size || is_valid(e));
 		if(is_valid(e)) {
-			const void *m = entry_to_ptr(mig, e);
-			table_add(t, (*ht->rehash)(m, ht->priv), m);
+			/* imperfect items until the first chain break may have wrapped
+			 * around, so should be rehashed always.
+			 *
+			 * (technically this could be avoided when the very last slot is
+			 * 0, possibly by setting chain_start to 1 << mig->bits, but
+			 * there's no convenient way to test that right now.)
+			 */
+			mig->chain_start = chain_start;
+			if((chain_start == 0 && (~e & t_perfect_mask(mig)))
+				|| !fast_migrate(t, mig, e, off))
+			{
+				const void *m = entry_to_ptr(mig, e);
+				table_add(t, (*ht->rehash)(m, ht->priv), m);
+			}
 			mig->elems--;
 		}
 		if(mig->elems > 0 && off + 1 < mig_size) {

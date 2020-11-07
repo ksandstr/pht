@@ -3,7 +3,7 @@ CCAN_DIR=~/src/ccan
 
 CFLAGS:=-Og -std=gnu11 -Wall -g -march=native \
 	-D_GNU_SOURCE -I $(CCAN_DIR) -I $(abspath .) \
-	#-DCCAN_LIST_DEBUG=1 #-DDEBUG_ME_HARDER
+	#-DDEBUG_ME_HARDER #-DCCAN_LIST_DEBUG=1
 
 TEST_BIN:=$(patsubst t/%.c,t/%,$(wildcard t/*.c))
 
