@@ -244,12 +244,16 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 		uintptr_t e;
 		bool new_chain = false;
 		size_t off = mig->nextmig, mig_size = (size_t)1 << mig->bits,
+			chain_start = mig->chain_start,
 			lim = mig_size;	/* TODO: scanning policy? */
 		assert(lim <= mig_size);
 		do {
 			assert(off < mig_size);
 			e = mig->table[off];
-			new_chain |= (e == 0);
+			if(e == 0) {
+				new_chain = true;
+				chain_start = off + 1;
+			}
 		} while(!is_valid(e) && ++off < lim);
 		assert(lim < mig_size || is_valid(e));
 		if(is_valid(e)) {
@@ -259,7 +263,7 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 		}
 		if(mig->elems > 0 && off + 1 < mig_size) {
 			mig->nextmig = off + 1;
-			if(new_chain) mig->chain_start = off;
+			if(new_chain) mig->chain_start = chain_start;
 		} else {
 			/* dispose of old table. */
 			list_del_from(&ht->tables, &mig->link);
