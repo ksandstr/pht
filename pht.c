@@ -326,6 +326,20 @@ bool pht_del(struct pht *ht, size_t hash, const void *p)
 			return true;
 		}
 	}
+
+#ifdef DEBUG_ME_HARDER
+	/* verify that the value definitely doesn't exist, or that it doesn't
+	 * rehash to @hash. (the latter is pedantic, but correct because iteration
+	 * is not guaranteed not to return @p under some other hash.)
+	 */
+	for(void *cand = pht_first(ht, &it);
+		cand != NULL; cand = pht_next(ht, &it))
+	{
+		size_t cand_hash = (*ht->rehash)(cand, ht->priv);
+		assert(cand != p || cand_hash != hash);
+	}
+#endif
+
 	return false;
 }
 
@@ -337,6 +351,7 @@ static bool table_next(
 	it->t = list_next(&ht->tables, it->t, link);
 	if(it->t == NULL) return false;
 
+	assert(it->hash == hash);
 	size_t mask = ((size_t)1 << it->t->bits) - 1, first = hash & mask;
 	if(first >= it->t->nextmig) {
 		it->off = first;
@@ -364,6 +379,7 @@ static void *table_val(
 	size_t hash, uintptr_t perfect)
 {
 	assert(it->t != NULL);
+	assert(it->hash == hash);
 	const struct _pht_table *t = it->t;
 	size_t mask = ((size_t)1 << t->bits) - 1, off = it->off;
 	uintptr_t extra = stash_bits(it->t, hash) | perfect;
