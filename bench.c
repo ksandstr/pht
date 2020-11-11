@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <getopt.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <ccan/htable/htable.h>
@@ -303,9 +304,64 @@ static void report_mixed(struct bmctx *ctx, int readfd)
 }
 
 
-int main(void)
+static void run_benchmark_with_ops(
+	const struct benchmark *bm, const struct ht_ops *ops,
+	int pipefds[static 2], struct bmctx *bc, bool nofork)
 {
-	FILE *words = fopen("/usr/share/dict/words", "r");
+	int child = fork();
+	if((child == 0) == !nofork) {
+		close(pipefds[0]);
+		bc->ht = malloc(ops->size);
+		if(bc->ht == NULL) abort();
+		(*ops->init)(bc->ht, &rehash_str, NULL);
+		(*bm->run)(bc, pipefds[1]);
+		(*ops->clear)(bc->ht);
+		free(bc->ht);
+		close(pipefds[1]);
+	} else {
+		close(pipefds[1]);
+		(*bm->report)(bc, pipefds[0]);
+		close(pipefds[0]);
+	}
+	if(child == 0) exit(EXIT_SUCCESS);
+	else {
+		int st, n = waitpid(child, &st, 0);
+		if(n != child) {
+			perror("waitpid");
+			abort();
+		}
+	}
+}
+
+
+int main(int argc, char *argv[])
+{
+	static const struct option opts[] = {
+		/* "no-fork" runs the results-collecting on the child side, which
+		 * means that next runs of the benchmark are affected by the detritus
+		 * of the ones before. it doesn't produce comparable benchmark
+		 * results.
+		 */
+		{ "no-fork", no_argument, 0, 'n' },
+		{ "words", required_argument, 0, 'w' },
+		{ },
+	};
+	const char *words_opt = "/usr/share/dict/words";
+	bool nofork = false;
+	for(;;) {
+		int n = getopt_long(argc, argv, "nw:", opts, NULL);
+		if(n < 0) break;
+		switch(n) {
+			case 'n': nofork = true; break;
+			case 'w': words_opt = strdupa(optarg); break;
+			default:
+				fprintf(stderr, "unexpected n=%d (`%c') from getopt_long()\n",
+					n, n);
+				abort();
+		}
+	}
+
+	FILE *words = fopen(words_opt, "r");
 	if(words == NULL) {
 		perror("fopen");
 		return EXIT_FAILURE;
@@ -371,29 +427,7 @@ int main(void)
 			struct bmctx bc = { .ops = ops, .wordbuf = wordbuf,
 				.n_words = n_words };
 			snprintf(bc.name, sizeof bc.name, "%s[%s]", bm->name, ops->name);
-			int child = fork();
-			if(child == 0) {
-				close(fds[0]);
-				bc.ht = malloc(ops->size);
-				if(bc.ht == NULL) abort();
-				(*ops->init)(bc.ht, &rehash_str, NULL);
-				(*bm->run)(&bc, fds[1]);
-				(*ops->clear)(bc.ht);
-				free(bc.ht);
-
-				close(fds[1]);
-				exit(EXIT_SUCCESS);
-			} else {
-				close(fds[1]);
-				(*bm->report)(&bc, fds[0]);
-				close(fds[0]);
-				int st;
-				n = waitpid(child, &st, 0);
-				if(n != child) {
-					perror("waitpid");
-					abort();
-				}
-			}
+			run_benchmark_with_ops(bm, ops, fds, &bc, nofork);
 		}
 	}
 
