@@ -31,8 +31,8 @@ struct _pht_table
 	 */
 	size_t chain_start;
 	uintptr_t common_bits, common_mask;
-	short bits;	/* size_log2 */
-	short perfect_bit;
+	uint8_t bits;	/* size_log2 */
+	uint8_t perfect_bit;
 	uintptr_t table[]
 		__attribute__((aligned(64)));
 };
@@ -208,6 +208,12 @@ static struct _pht_table *update_common(
 		assert(b >= 0);
 		t->common_mask = ~((uintptr_t)1 << b);
 		t->common_bits = (uintptr_t)p & t->common_mask;
+
+		/* this'd waste both space and scanning time when t->bits > 0, so
+		 * let's only waste space instead.
+		 */
+		assert(t->elems == 0);
+		t->bits = 0;
 	} else {
 		if(t->elems > 0) {
 			t = new_table(ht, t);
@@ -300,7 +306,6 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 	if(mig != t) {
 		assert(mig->elems > 0);
 		uintptr_t e;
-		bool new_chain = false;
 		size_t off = mig->nextmig, mig_size = (size_t)1 << mig->bits,
 			chain_start = mig->chain_start,
 			lim = mig_size;	/* TODO: scanning policy? */
@@ -308,10 +313,7 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 		do {
 			assert(off < mig_size);
 			e = mig->table[off];
-			if(e == 0) {
-				new_chain = true;
-				chain_start = off + 1;
-			}
+			if(e == 0) chain_start = off + 1;
 		} while(!is_valid(e) && ++off < lim);
 		assert(lim < mig_size || is_valid(e));
 		if(is_valid(e)) {
@@ -321,7 +323,7 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 		}
 		if(mig->elems > 0 && off + 1 < mig_size) {
 			mig->nextmig = off + 1;
-			if(new_chain) mig->chain_start = chain_start;
+			mig->chain_start = chain_start;
 		} else {
 			/* dispose of old table. */
 			list_del_from(&ht->tables, &mig->link);
@@ -353,8 +355,7 @@ bool pht_del(struct pht *ht, size_t hash, const void *p)
 	for(void *cand = pht_first(ht, &it);
 		cand != NULL; cand = pht_next(ht, &it))
 	{
-		size_t cand_hash = (*ht->rehash)(cand, ht->priv);
-		assert(cand != p || cand_hash != hash);
+		assert(cand != p || (*ht->rehash)(cand, ht->priv) != hash);
 	}
 #endif
 
