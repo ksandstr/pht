@@ -62,9 +62,9 @@ static inline void *entry_to_ptr(const struct _pht_table *t, uintptr_t e) {
 
 
 static inline uintptr_t ptr_to_entry(
-	const struct _pht_table *t, const void *p, uintptr_t perfect)
+	const struct _pht_table *t, const void *p)
 {
-	return ((uintptr_t)p & ~t->common_mask) | perfect;
+	return (uintptr_t)p & ~t->common_mask;
 }
 
 
@@ -225,8 +225,19 @@ static struct _pht_table *update_common(
 static void table_add(struct _pht_table *t, size_t hash, const void *p)
 {
 	assert(t->elems < 1 << t->bits);
-	uintptr_t perfect = 1ul << t->perfect_bit;
+	uintptr_t perfect = 1ul << t->perfect_bit,
+		e = stash_bits(t, hash) | ptr_to_entry(t, p);
 	size_t mask = ((size_t)1 << t->bits) - 1, i = hash & mask;
+	if(is_valid(t->table[i]) && (~t->table[i] & perfect)) {
+		/* use an imperfect entry's slot to store @p perfectly, then
+		 * reinsert the previous item somewhere down the hash chain.
+		 */
+		uintptr_t olde = t->table[i];
+		t->table[i] = e | perfect;
+		e = olde;
+		perfect = 0;
+		i = (i + 1) & mask;
+	}
 	while(is_valid(t->table[i])) {
 		i = (i + 1) & mask;
 		assert(i != (hash & mask));
@@ -237,7 +248,7 @@ static void table_add(struct _pht_table *t, size_t hash, const void *p)
 	assert(t->table[i] == 0 || t->deleted > 0);
 	t->deleted -= t->table[i];
 
-	t->table[i] = stash_bits(t, hash) | ptr_to_entry(t, p, perfect);
+	t->table[i] = e | perfect;
 	assert(is_valid(t->table[i]));
 	t->elems++;
 }
