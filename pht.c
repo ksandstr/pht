@@ -12,11 +12,9 @@
 #include "pht.h"
 
 
+/* (see t_perfect_mask()) */
+#define NO_PERFECT_BIT (sizeof(uintptr_t) * CHAR_BIT - 1)
 #define TOMBSTONE (1)
-/* this value is convenient because 1ull << 64 is 0, removing a conditional
- * branch or cmov from all spots that expand the perfect mask.
- */
-#define NO_PERFECT_BIT (sizeof(uintptr_t) * CHAR_BIT)
 
 
 struct _pht_table
@@ -56,6 +54,15 @@ static size_t t_max_fill(const struct _pht_table *t) {
 }
 
 
+static uintptr_t t_perfect_mask(const struct _pht_table *t) {
+	/* shifting by the width of a value is undefined, so we'll shift word-size
+	 * 2 by at most its width minus one, and never allocate the perfect bit at
+	 * the very bottom.
+	 */
+	return (uintptr_t)2 << t->perfect_bit;
+}
+
+
 static inline void *entry_to_ptr(const struct _pht_table *t, uintptr_t e) {
 	return (void *)((e & ~t->common_mask) | t->common_bits);
 }
@@ -71,7 +78,7 @@ static inline uintptr_t ptr_to_entry(
 static inline uintptr_t stash_bits(const struct _pht_table *t, size_t hash) {
 	int d = t->bits;
 	size_t b = (hash << d) | (hash >> (sizeof hash * CHAR_BIT - d));
-	return (hash ^ b) & t->common_mask & ~(1ul << t->perfect_bit);
+	return (hash ^ b) & t->common_mask & ~t_perfect_mask(t);
 }
 
 
@@ -109,7 +116,7 @@ struct pht *pht_check(const struct pht *ht, const char *abortstr)
 
 		size_t deleted = 0, empty = 0, item = 0,
 			mask = ((size_t)1 << t->bits) - 1;
-		uintptr_t perf_mask = 1ul << t->perfect_bit;
+		uintptr_t perf_mask = t_perfect_mask(t);
 		for(size_t i=0; i < (size_t)1 << t->bits; i++) {
 			uintptr_t e = t->table[i];
 			switch(e) {
@@ -194,14 +201,13 @@ static struct _pht_table *update_common(
 {
 	assert((uintptr_t)p != TOMBSTONE);
 	if(ht->elems == 0) {
-		/* de-common exactly one set bit above TOMBSTONE, so that valid
-		 * entries will never look like 0 or TOMBSTONE.
+		/* de-common exactly one set bit above TOMBSTONE, so that the sole
+		 * valid entry won't look like 0 or TOMBSTONE.
 		 */
-		int b = ffsll((uintptr_t)p & ~3ul) - 1;
+		int b = ffsll((uintptr_t)p & ~1ul) - 1;
 		assert(b >= 0);
 		t->common_mask = ~((uintptr_t)1 << b);
 		t->common_bits = (uintptr_t)p & t->common_mask;
-		t->perfect_bit = 1;
 	} else {
 		if(t->elems > 0) {
 			t = new_table(ht, t);
@@ -211,12 +217,13 @@ static struct _pht_table *update_common(
 		uintptr_t diffmask = t->common_bits ^ (t->common_mask & (uintptr_t)p);
 		t->common_mask &= ~diffmask;
 		t->common_bits = (uintptr_t)p & t->common_mask;
-		t->perfect_bit = ffsll(t->common_mask & ~1ul) - 1;
-		if(t->perfect_bit < 0) t->perfect_bit = NO_PERFECT_BIT;
-		assert(t->perfect_bit > 0);
 	}
 	assert(((uintptr_t)p & ~t->common_mask) != 0
 		&& ((uintptr_t)p & ~t->common_mask) != TOMBSTONE);
+
+	int pb = ffsl(t->common_mask & ~1ul) - 1;
+	t->perfect_bit = pb == 0 ? NO_PERFECT_BIT : pb - 1;
+	assert(t->common_mask & t_perfect_mask(t));
 
 	return t;
 }
@@ -225,7 +232,7 @@ static struct _pht_table *update_common(
 static void table_add(struct _pht_table *t, size_t hash, const void *p)
 {
 	assert(t->elems < 1 << t->bits);
-	uintptr_t perfect = 1ul << t->perfect_bit,
+	uintptr_t perfect = t_perfect_mask(t),
 		e = stash_bits(t, hash) | ptr_to_entry(t, p);
 	size_t mask = ((size_t)1 << t->bits) - 1, i = hash & mask;
 	if(is_valid(t->table[i]) && (~t->table[i] & perfect)) {
@@ -367,7 +374,7 @@ static bool table_next(
 	if(first >= it->t->nextmig) {
 		it->off = first;
 		it->last = first;
-		*perfect = 1ul << it->t->perfect_bit;
+		*perfect = t_perfect_mask(it->t);
 	} else if(first < it->t->chain_start) {
 		/* first is in an already-migrated chain; skip table. */
 		return table_next(ht, it, hash, perfect);
@@ -428,7 +435,7 @@ void *pht_firstval(const struct pht *ht, struct pht_iter *it, size_t hash)
 	it->off = hash & mask;
 	it->last = it->off;
 	it->hash = hash;
-	return table_val(ht, it, hash, 1ul << it->t->perfect_bit);
+	return table_val(ht, it, hash, t_perfect_mask(it->t));
 }
 
 
