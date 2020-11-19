@@ -37,7 +37,11 @@ extern void pht_clear(struct pht *ht);
  */
 extern struct pht *pht_check(const struct pht *ht, const char *abortstr);
 
-/* NOTE: due to effects of progressive migration, calling pht_add()
+/* pht_add() returns true on success, and false when either there was a malloc
+ * failure or @p is NULL, which cannot be added or found by iterator under the
+ * current interface.
+ *
+ * NOTE: due to effects of progressive migration, calling pht_add()
  * invalidates all iterators referencing @ht.
  */
 extern bool pht_add(struct pht *ht, size_t hash, const void *p);

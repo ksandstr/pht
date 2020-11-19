@@ -276,6 +276,8 @@ bool pht_copy(struct pht *dst, const struct pht *src)
 
 bool pht_add(struct pht *ht, size_t hash, const void *p)
 {
+	if(unlikely(p == NULL)) return false;
+
 	struct _pht_table *t = list_top(&ht->tables, struct _pht_table, link);
 	if(unlikely(t == NULL
 		|| t->elems + 1 > t_max_elems(t)
@@ -289,11 +291,12 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 			|| list_tail(&ht->tables, struct _pht_table, link) == t);
 		t = new_table(ht, t);
 	}
-	if(t == NULL) return false;
+	if(unlikely(t == NULL)) return false;
 	assert(t == list_top(&ht->tables, struct _pht_table, link));
 
 	if(((uintptr_t)p & t->common_mask) != t->common_bits) {
 		t = update_common(ht, t, p);
+		if(unlikely(t == NULL)) return false;
 	}
 
 	assert(p != NULL);
