@@ -1,5 +1,5 @@
 
-/* basic tests that don't require any operation to succeed. */
+/* basic tests on a hash table that stays empty. */
 
 #include <stdlib.h>
 #include <stdint.h>
