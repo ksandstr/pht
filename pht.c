@@ -413,7 +413,10 @@ static void *table_val(
 		if(t->table[off] == 0) break;
 		extra &= ~perfect;
 		off = (off + 1) & mask;
-		if(off == 0 && off != it->last) off = t->nextmig;
+		if(off == 0 && off != it->last) {
+			if(t->chain_start > 0) break;
+			off = t->nextmig;
+		}
 	} while(off != it->last);
 
 	if(table_next(ht, it, hash, &perfect)) {
