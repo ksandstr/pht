@@ -47,9 +47,24 @@ static size_t key_count(
 }
 
 
+static size_t key_count_all(
+	const struct pht *ht,
+	bool (*cmp)(const void *, void *), const void *key)
+{
+	size_t count = 0;
+	struct pht_iter it;
+	for(void *cand = pht_first(ht, &it);
+		cand != NULL; cand = pht_next(ht, &it))
+	{
+		if((*cmp)(cand, (void *)key)) count++;
+	}
+	return count;
+}
+
+
 int main(void)
 {
-	plan_tests(15);
+	plan_tests(16);
 
 	static const char *const strs[] = {
 		"my ass-clap keeps alerting the bees!",
@@ -76,7 +91,7 @@ int main(void)
 	ok1(pht_count(&ht) == 0);
 
 	/* add strings. */
-	bool adds_ok = true, counts_ok = true, total_ok = true;
+	bool adds_ok = true, counts_ok = true, counts_all_ok = true, total_ok = true;
 	for(int i=0; i < ARRAY_SIZE(strs); i++) {
 		size_t hash = rehash_str(strs[i], NULL);
 		//diag("str=`%s', hash=%#zx", strs[i], hash);
@@ -96,14 +111,21 @@ int main(void)
 			hash = rehash_str(strs[j], NULL);
 			size_t ct = key_count(&ht, hash, &cmp_str, strs[j]);
 			if((j <= i && ct != 1) || (j > i && ct > 0)) {
-				diag("count=%zu for j=%d `%s' is wrong", ct, j, strs[j]);
+				diag("[hashed] count=%zu for j=%d `%s' is wrong", ct, j, strs[j]);
 				counts_ok = false;
+			}
+
+			ct = key_count_all(&ht, &cmp_str, strs[j]);
+			if((j <= i && ct != 1) || (j > i && ct > 0)) {
+				diag("[all] count=%zu for j=%d `%s' is wrong", ct, j, strs[j]);
+				counts_all_ok = false;
 			}
 		}
 	}
 	pht_check(&ht, NULL);
 	ok1(adds_ok);
 	ok1(counts_ok);
+	ok1(counts_all_ok);
 	ok1(total_ok);
 	ok1(pht_count(&ht) == ARRAY_SIZE(strs));
 
