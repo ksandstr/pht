@@ -30,12 +30,12 @@ struct _pht_table
 	 * non-empty slot following an empty.
 	 */
 	size_t chain_start;
+	int credit;	/* # of extra entries moved without rehash */
 	uintptr_t common_bits, common_mask;
 	uint8_t bits;	/* size_log2 */
 	uint8_t perfect_bit;
 
-	uintptr_t table[]
-		__attribute__((aligned(64)));
+	uintptr_t table[];
 };
 
 
@@ -192,6 +192,7 @@ static struct _pht_table *new_table(
 	assert(t->deleted == 0);
 	assert(t->nextmig == 0);
 	assert(t->chain_start == 0);
+	assert(t->credit == 0);
 	t->bits = bits;
 	if(prev != NULL) {
 		t->common_mask = prev->common_mask;
@@ -373,25 +374,80 @@ static bool fast_migrate(struct _pht_table *t,
 }
 
 
-bool pht_copy(struct pht *dst, const struct pht *src)
+/* @mig is invalidated when @mig->elems == 1 before call. */
+static bool mig_item(
+	struct pht *ht, struct _pht_table *t, struct _pht_table *mig,
+	uintptr_t e, bool fast_only)
 {
-	pht_init(dst, src->rehash, src->priv);
-	/* when in doubt, use brute force. it'd be much quicker to complete all
-	 * migration in @src and then memdup the resulting primary, but this one
-	 * is simpler at the cost of forming fresh hash chains in the destination
-	 * and using more memory.
+	assert(is_valid(e));
+	bool fast = fast_migrate(t, mig, e, mig->nextmig - 1);
+	if(!fast) {
+		if(fast_only) return false;
+		const void *m = entry_to_ptr(mig, e);
+		table_add(t, (*ht->rehash)(m, ht->priv), m);
+	}
+	if(unlikely(--mig->elems == 0)) {
+		/* dispose of old table. */
+		list_del_from(&ht->tables, &mig->link);
+		free(mig);
+	}
+	return fast;
+}
+
+
+/* as necessary for a single successful call of pht_add(), migrate one item
+ * from the very last subtable while calling rehash at most once.
+ */
+static void mig_step(struct pht *ht, struct _pht_table *t)
+{
+	struct _pht_table *mig = list_tail(&ht->tables, struct _pht_table, link);
+	assert(mig != NULL);
+	if(mig == t) return;
+	assert(mig->elems > 0);
+
+	if(mig->credit > 0 && ((uintptr_t)&mig->table[mig->nextmig] & 63) == 0) {
+		mig->credit--;
+		return;
+	}
+
+	/* the first scan looks for an item at any distance, since at least one
+	 * must be moved per step.
 	 */
-	struct pht_iter it;
-	for(void *ptr = pht_first(src, &it);
-		ptr != NULL; ptr = pht_next(src, &it))
-	{
-		bool ok = pht_add(dst, (*src->rehash)(ptr, src->priv), ptr);
-		if(!ok) {
-			pht_clear(dst);
-			return false;
+	uintptr_t e;
+	do {
+		assert(mig->nextmig < (size_t)1 << mig->bits);
+		e = mig->table[mig->nextmig++];
+		if(e == 0) mig->chain_start = mig->nextmig;
+	} while(!is_valid(e));
+	size_t elems = mig->elems - 1;
+	bool rehashed = !mig_item(ht, t, mig, e, false);
+	if(elems == 0) return;
+	assert(elems == mig->elems);
+
+	/* the second scan tries to finish the last cacheline touched, stopping
+	 * only if a second item requiring a rehash is found.
+	 */
+	ssize_t left = (64 - ((uintptr_t)&mig->table[mig->nextmig] & 63)) & 63;
+	size_t lim = min((size_t)1 << mig->bits,
+		mig->nextmig + left / sizeof(uintptr_t));
+	while(mig->nextmig < lim) {
+		e = mig->table[mig->nextmig++];
+		if(e == 0) mig->chain_start = mig->nextmig;
+		assert((left -= sizeof(uintptr_t), left >= 0));
+		if(is_valid(e)) {
+			assert(elems == mig->elems);
+			if(!mig_item(ht, t, mig, e, rehashed)) {
+				if(rehashed) {
+					mig->nextmig--;
+					return;
+				}
+				rehashed = true;
+			}
+			if(--elems == 0) return;
+			mig->credit++;
 		}
 	}
-	return true;
+	assert(left == 0);
 }
 
 
@@ -411,8 +467,8 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 			|| t->elems + 1 <= t_max_elems(t)
 			|| list_tail(&ht->tables, struct _pht_table, link) == t);
 		t = new_table(ht, t);
+		if(unlikely(t == NULL)) return false;
 	}
-	if(unlikely(t == NULL)) return false;
 	assert(t == list_top(&ht->tables, struct _pht_table, link));
 
 	if(((uintptr_t)p & t->common_mask) != t->common_bits) {
@@ -424,49 +480,7 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 	table_add(t, hash, p);
 	ht->elems++;
 
-	/* where applicable, migrate one item from the very last subtable. */
-	struct _pht_table *mig = list_tail(&ht->tables, struct _pht_table, link);
-	assert(mig != NULL);
-	if(mig != t) {
-		assert(mig->elems > 0);
-		uintptr_t e;
-		size_t off = mig->nextmig, mig_size = (size_t)1 << mig->bits,
-			chain_start = mig->chain_start,
-			lim = mig_size;	/* TODO: scanning policy? */
-		assert(lim <= mig_size);
-		do {
-			assert(off < mig_size);
-			e = mig->table[off];
-			if(e == 0) chain_start = off + 1;
-		} while(!is_valid(e) && ++off < lim);
-		assert(lim < mig_size || is_valid(e));
-		if(is_valid(e)) {
-			/* imperfect items until the first chain break may have wrapped
-			 * around, so should be rehashed always.
-			 *
-			 * (technically this could be avoided when the very last slot is
-			 * 0, possibly by setting chain_start to 1 << mig->bits, but
-			 * there's no convenient way to test that right now.)
-			 */
-			mig->chain_start = chain_start;
-			if((chain_start == 0 && (~e & t_perfect_mask(mig)))
-				|| !fast_migrate(t, mig, e, off))
-			{
-				const void *m = entry_to_ptr(mig, e);
-				table_add(t, (*ht->rehash)(m, ht->priv), m);
-			}
-			mig->elems--;
-		}
-		if(mig->elems > 0 && off + 1 < mig_size) {
-			mig->nextmig = off + 1;
-			mig->chain_start = chain_start;
-		} else {
-			/* dispose of old table. */
-			list_del_from(&ht->tables, &mig->link);
-			free(mig);
-		}
-	}
-
+	mig_step(ht, t);
 	return true;
 }
 
@@ -496,6 +510,28 @@ bool pht_del(struct pht *ht, size_t hash, const void *p)
 #endif
 
 	return false;
+}
+
+
+bool pht_copy(struct pht *dst, const struct pht *src)
+{
+	pht_init(dst, src->rehash, src->priv);
+	/* when in doubt, use brute force. it'd be much quicker to complete all
+	 * migration in @src and then memdup the resulting primary, but this one
+	 * is simpler at the cost of forming fresh hash chains in the destination
+	 * and using more memory.
+	 */
+	struct pht_iter it;
+	for(void *ptr = pht_first(src, &it);
+		ptr != NULL; ptr = pht_next(src, &it))
+	{
+		bool ok = pht_add(dst, (*src->rehash)(ptr, src->priv), ptr);
+		if(!ok) {
+			pht_clear(dst);
+			return false;
+		}
+	}
+	return true;
 }
 
 
