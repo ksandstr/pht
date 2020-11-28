@@ -64,7 +64,7 @@ static size_t key_count_all(
 
 int main(void)
 {
-	plan_tests(16);
+	plan_tests(18);
 
 	static const char *const strs[] = {
 		"my ass-clap keeps alerting the bees!",
@@ -138,6 +138,29 @@ int main(void)
 	ok1(total_ok);
 	ok1(pht_count(&ht) == ARRAY_SIZE(strs));
 
+	/* make a copy and confirm its contents. */
+	todo_start("pht_copy() unimplemented");
+	struct pht ht2 = PHT_INITIALIZER(ht2, &rehash_str, NULL);
+	if(!ok1(pht_copy(&ht2, &ht))) {
+		pht_init(&ht2, &rehash_str, NULL);
+	}
+	pht_check(&ht2, NULL);
+	bool copied_ok = true;
+	struct pht_iter it;
+	for(void *ptr = pht_first(&ht, &it);
+		ptr != NULL; ptr = pht_next(&ht, &it))
+	{
+		char *oth = pht_get(&ht2, rehash_str(ptr, NULL), &cmp_str, ptr);
+		if(oth == NULL || !streq(ptr, oth)) {
+			diag("ptr=`%s' wasn't found in copy", (char *)ptr);
+			copied_ok = false;
+			break;
+		}
+	}
+	ok1(copied_ok);
+	pht_clear(&ht2);
+	todo_end();
+
 	/* delete ones at odd indexes */
 	bool dels_ok = true;
 	int n_removed = 0;
@@ -173,7 +196,6 @@ int main(void)
 	bool itn_ok = true;
 	int present[ARRAY_SIZE(strs)];
 	for(int i=0; i < ARRAY_SIZE(present); i++) present[i] = 0;
-	struct pht_iter it;
 	for(const char *cand = pht_first(&ht, &it);
 		cand != NULL; cand = pht_next(&ht, &it))
 	{
