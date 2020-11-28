@@ -84,8 +84,17 @@ int main(void)
 		"it's a man's life in the british dental association",
 		"guitar", "violin", "cello", "bassoon", "tuba", "bagpipe",
 		"mandolin", "piano", "saxophone", "kazoo", "otamatone",
+
+		"cheese", "milk", "cream", "half-and-half", "soylent green",
+		"bachelor chow", "catfood", "dogfood", "birdseed", "pellets",
+
+		"ranarama", "super pipeline", "pitfall", "hektik", "commando",
+		"solomon's key", "elite", "creatures", "grand monster slam", "wizball",
+		"delta", "zaxxon", "uridium", "sanxion", "salamander", "krakout",
+		"the way of the exploding fist", "blue max", "choplifter",
+		"little computer people", "bagitman", "bozo's night out",
 	};
-	assert(ARRAY_SIZE(strs) == 71);	/* because prime. */
+	assert(ARRAY_SIZE(strs) == 103);	/* because prime. */
 
 	struct pht ht = PHT_INITIALIZER(ht, &rehash_str, NULL);
 	ok1(pht_count(&ht) == 0);
