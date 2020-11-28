@@ -269,7 +269,22 @@ static void table_add(struct _pht_table *t, size_t hash, const void *p)
 
 bool pht_copy(struct pht *dst, const struct pht *src)
 {
-	/* TODO */
+	pht_init(dst, src->rehash, src->priv);
+	/* when in doubt, use brute force. it'd be much quicker to complete all
+	 * migration in @src and then memdup the resulting primary, but this one
+	 * is simpler at the cost of forming fresh hash chains in the destination
+	 * and using more memory.
+	 */
+	struct pht_iter it;
+	for(void *ptr = pht_first(src, &it);
+		ptr != NULL; ptr = pht_next(src, &it))
+	{
+		bool ok = pht_add(dst, (*src->rehash)(ptr, src->priv), ptr);
+		if(!ok) {
+			pht_clear(dst);
+			return false;
+		}
+	}
 	return true;
 }
 

@@ -139,7 +139,6 @@ int main(void)
 	ok1(pht_count(&ht) == ARRAY_SIZE(strs));
 
 	/* make a copy and confirm its contents. */
-	todo_start("pht_copy() unimplemented");
 	struct pht ht2 = PHT_INITIALIZER(ht2, &rehash_str, NULL);
 	if(!ok1(pht_copy(&ht2, &ht))) {
 		pht_init(&ht2, &rehash_str, NULL);
@@ -159,7 +158,6 @@ int main(void)
 	}
 	ok1(copied_ok);
 	pht_clear(&ht2);
-	todo_end();
 
 	/* delete ones at odd indexes */
 	bool dels_ok = true;
