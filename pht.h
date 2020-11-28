@@ -45,8 +45,15 @@ extern struct pht *pht_check(const struct pht *ht, const char *abortstr);
  * invalidates all iterators referencing @ht.
  */
 extern bool pht_add(struct pht *ht, size_t hash, const void *p);
-extern bool pht_copy(struct pht *dst, const struct pht *src);
 extern bool pht_del(struct pht *ht, size_t hash, const void *p);
+
+/* @dst should be an uninitialized struct pht, a freshly-initialized one where
+ * no items have been added, or one that's been pht_clear()ed and no items
+ * added. on success, @dst is initialized to the same rehash/priv pair as @src
+ * and contains exactly the same items as @src. on failure @dst will be
+ * initialized the same way but left empty.
+ */
+extern bool pht_copy(struct pht *dst, const struct pht *src);
 
 struct pht_iter {
 	struct _pht_table *t;
@@ -57,6 +64,10 @@ extern void *pht_firstval(const struct pht *ht,
 	struct pht_iter *it, size_t hash);
 extern void *pht_nextval(const struct pht *ht,
 	struct pht_iter *it, size_t hash);
+/* NOTE that as of right now, pht_delval() MUST NOT be used with iterators
+ * from pht_{first,next,prev}(); only iterators created by the *val group are
+ * acceptable. this will change one day.
+ */
 extern void pht_delval(struct pht *ht, struct pht_iter *it);
 
 static inline void *pht_get(const struct pht *ht, size_t h,
