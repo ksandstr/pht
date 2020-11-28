@@ -32,6 +32,11 @@ static bool cmp_str(const void *cand, void *key) {
 }
 
 
+static int ord_ptr(const void *a, const void *b) {
+	return *(const void *const *)a - *(const void *const *)b;
+}
+
+
 static size_t key_count(
 	const struct pht *ht, size_t hash,
 	bool (*cmp)(const void *, void *), const void *key)
@@ -62,9 +67,70 @@ static size_t key_count_all(
 }
 
 
+static bool same(const struct pht *pa, const struct pht *pb)
+{
+	if(pa == pb) return true;
+	if(pht_count(pa) != pht_count(pb)) return false;
+	size_t sz = pht_count(pa), n;
+	void *a[sz], *b[sz];
+	struct pht_iter it;
+	n = 0;
+	for(void *p = pht_first(pa, &it); p != NULL; p = pht_next(pa, &it)) {
+		a[n++] = p;
+	}
+	assert(n == sz);
+	qsort(a, sz, sizeof a[0], &ord_ptr);
+	n = 0;
+	for(void *p = pht_first(pb, &it); p != NULL; p = pht_next(pb, &it)) {
+		b[n++] = p;
+	}
+	assert(n == sz);
+	qsort(b, sz, sizeof b[0], &ord_ptr);
+	for(size_t i=0; i < n; i++) {
+		if(a[i] != b[i]) return false;
+	}
+	return true;
+}
+
+
+static bool disjoint(const struct pht *pa, const struct pht *pb)
+{
+	if(pa == pb) return false;
+	size_t sa = pht_count(pa), sb = pht_count(pb), n;
+	void *a[sa], *b[sb];
+	struct pht_iter it;
+
+	n = 0;
+	for(void *p = pht_first(pa, &it); p != NULL; p = pht_next(pa, &it)) {
+		a[n++] = p;
+	}
+	assert(n == sa);
+	qsort(a, sa, sizeof a[0], &ord_ptr);
+
+	n = 0;
+	for(void *p = pht_first(pb, &it); p != NULL; p = pht_next(pb, &it)) {
+		b[n++] = p;
+	}
+	assert(n == sb);
+	qsort(b, sb, sizeof b[0], &ord_ptr);
+
+	/* zip them up, but instead of storing equal values, return false when
+	 * common items are found.
+	 */
+	size_t ia = 0, ib = 0;
+	while(ia < sa && ib < sb) {
+		if(a[ia] < b[ib]) ia++;
+		else if(a[ia] > b[ib]) ib++;
+		else return false;
+	}
+
+	return true;
+}
+
+
 int main(void)
 {
-	plan_tests(18);
+	plan_tests(20);
 
 	static const char *const strs[] = {
 		"my ass-clap keeps alerting the bees!",
@@ -144,32 +210,24 @@ int main(void)
 		pht_init(&ht2, &rehash_str, NULL);
 	}
 	pht_check(&ht2, NULL);
-	bool copied_ok = true;
-	struct pht_iter it;
-	for(void *ptr = pht_first(&ht, &it);
-		ptr != NULL; ptr = pht_next(&ht, &it))
-	{
-		char *oth = pht_get(&ht2, rehash_str(ptr, NULL), &cmp_str, ptr);
-		if(oth == NULL || !streq(ptr, oth)) {
-			diag("ptr=`%s' wasn't found in copy", (char *)ptr);
-			copied_ok = false;
-			break;
-		}
-	}
-	ok1(copied_ok);
-	pht_clear(&ht2);
+	ok1(same(&ht, &ht2));
 
-	/* delete ones at odd indexes */
+	/* delete ones at odd indexes in `ht', and even indexes in `ht2'. */
 	bool dels_ok = true;
 	int n_removed = 0;
-	for(int i=1; i < ARRAY_SIZE(strs); i += 2) {
-		bool ok = pht_del(pht_check(&ht, NULL),
+	for(int i=0; i < ARRAY_SIZE(strs); i++) {
+		struct pht *target = (i & 1) ? &ht : &ht2;
+		bool ok = pht_del(pht_check(target, NULL),
 			rehash_str(strs[i], NULL), strs[i]);
-		if(!ok) dels_ok = false; else n_removed++;
+		if(!ok) dels_ok = false;
+		else if(i & 1) n_removed++;
 	}
-	pht_check(&ht, NULL);
+	pht_check(&ht, NULL); pht_check(&ht2, NULL);
 	ok1(dels_ok);
 	ok1(pht_count(&ht) == ARRAY_SIZE(strs) - n_removed);
+	ok1(pht_count(&ht2) == ARRAY_SIZE(strs) - pht_count(&ht));
+	ok1(disjoint(&ht, &ht2));
+	pht_clear(&ht2);
 
 	/* look them up, one by one. */
 	cmp_verbose = true;
@@ -194,6 +252,7 @@ int main(void)
 	bool itn_ok = true;
 	int present[ARRAY_SIZE(strs)];
 	for(int i=0; i < ARRAY_SIZE(present); i++) present[i] = 0;
+	struct pht_iter it;
 	for(const char *cand = pht_first(&ht, &it);
 		cand != NULL; cand = pht_next(&ht, &it))
 	{
