@@ -156,21 +156,29 @@ static void run_add(struct bmctx *ctx, int writefd)
 	uint32_t *samples = malloc(sizeof *samples * n_words);
 	if(samples == NULL) abort();
 
-	size_t n = 0;
+	/* precompute rehash, strlen for proper b2b measurements */
+	darray(const char *) strs = darray_new();
+	darray(size_t) hashes = darray_new();
 	const char *s = ctx->wordbuf;
 	while(*s != '\0') {
-		size_t hash = rehash_str(s, NULL);
+		darray_push(strs, s);
+		darray_push(hashes, rehash_str(s, NULL));
+		s += strlen(s) + 1;
+	}
+	assert(strs.size == n_words);
+
+	for(size_t i=0; i < n_words; i++) {
 		uint64_t start = rdtsc();
-		bool ok = (*ops->add)(ctx->ht, hash, s);
+		bool ok = (*ops->add)(ctx->ht, hashes.item[i], strs.item[i]);
 		if(!ok) abort();
 		uint64_t end = rdtsc();
-		assert(n < n_words);
-		samples[n++] = end - start;
-		s += strlen(s) + 1;
+		samples[i] = end - start;
 	}
 
 	send_array(writefd, n_words, samples);
 	free(samples);
+	darray_free(strs);
+	darray_free(hashes);
 }
 
 
