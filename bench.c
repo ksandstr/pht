@@ -13,6 +13,8 @@
 #include <getopt.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/time.h>
+#include <sys/resource.h>
 #include <ccan/htable/htable.h>
 #include <ccan/hash/hash.h>
 #include <ccan/tally/tally.h>
@@ -285,7 +287,11 @@ static void run_mixed(struct bmctx *ctx, int writefd)
 			ok = (*ops->del)(ctx->ht, hash, d);
 			end = rdtsc();
 			darray_push(cyc_del, (uint32_t)(end - start));
-			if(!ok) abort();
+			if(!ok) {
+				if(ops->del == (typeof(ops->del))&pht_del) pht_check(ctx->ht, "missed del");
+				printf("%s: missed del on `%s'\n", __func__, d);
+				abort();
+			}
 			d += strlen(d) + 1;
 		}
 	}
@@ -316,8 +322,17 @@ static void run_benchmark_with_ops(
 	const struct benchmark *bm, const struct ht_ops *ops,
 	int pipefds[static 2], struct bmctx *bc, bool nofork)
 {
+	/* disable coredumps from the parent process. */
+	int n = setrlimit(RLIMIT_CORE, &(struct rlimit){ 0, RLIM_INFINITY });
+	if(n != 0) perror("setrlimit (disable coredumps)");
+
 	int child = fork();
 	if((child == 0) == !nofork) {
+		/* reënable them in the benchmark side, regardless of who it is. */
+		n = setrlimit(RLIMIT_CORE,
+			&(struct rlimit){ RLIM_INFINITY, RLIM_INFINITY });
+		if(n != 0) perror("setrlimit (reënable coredumps)");
+
 		close(pipefds[0]);
 		bc->ht = malloc(ops->size);
 		if(bc->ht == NULL) abort();
