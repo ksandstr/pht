@@ -486,16 +486,21 @@ void pht_delval(struct pht *ht, struct pht_iter *it)
 	assert(it->t->elems > 0);
 	assert(is_valid(it->t->table[it->off]));
 
-	it->t->table[it->off] = TOMBSTONE;
-	it->t->deleted++;
 	ht->elems--;
-	if(--it->t->elems == 0
-		&& it->t != list_top(&ht->tables, struct _pht_table, link))
+	if(unlikely(--it->t->elems == 0)
+		&& (it->t != list_top(&ht->tables, struct _pht_table, link)
+			|| it->t == list_tail(&ht->tables, struct _pht_table, link)))
 	{
+		/* (that or-clause is a mildly inobvious way to test for either a
+		 * non-first item, or a sole item.)
+		 */
 		struct _pht_table *dead = it->t;
 		table_next(ht, it, it->hash, &(uintptr_t){ 0 });
 		list_del_from(&ht->tables, &dead->link);
 		free(dead);
+	} else {
+		it->t->table[it->off] = TOMBSTONE;
+		it->t->deleted++;
 	}
 }
 
