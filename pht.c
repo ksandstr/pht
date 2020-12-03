@@ -16,6 +16,9 @@
 #define NO_PERFECT_BIT (sizeof(uintptr_t) * CHAR_BIT - 1)
 #define TOMBSTONE (1)
 
+/* _pht_table flags */
+#define KEEP_CHAIN 1
+
 
 struct _pht_table
 {
@@ -32,6 +35,7 @@ struct _pht_table
 	size_t chain_start;
 	int credit;	/* # of extra entries moved without rehash */
 	uintptr_t common_bits, common_mask;
+	uint16_t flags;	/* , as is tradition */
 	uint8_t bits;	/* size_log2 */
 	uint8_t perfect_bit;
 
@@ -122,7 +126,8 @@ struct pht *pht_check(const struct pht *ht, const char *abortstr)
 {
 #ifndef NDEBUG
 	ssize_t phantom = ht->elems;
-	const struct _pht_table *t;
+	const struct _pht_table *t,
+		*primary = list_top(&ht->tables, struct _pht_table, link);
 	list_for_each(&ht->tables, t, link) {
 		phantom -= t->elems;
 		assert(t->deleted <= (size_t)1 << t->bits);
@@ -164,6 +169,13 @@ struct pht *pht_check(const struct pht *ht, const char *abortstr)
 		assert(deleted == t->deleted);
 		assert(item == t->elems);
 		assert(empty == ((size_t)1 << t->bits) - t->deleted - t->elems);
+
+		/* only the first secondary's tombstones are retained, since migration
+		 * proceeds back to front.
+		 */
+		assert(list_prev(&ht->tables, t, link) == primary
+			|| (~t->flags & KEEP_CHAIN));
+		assert((~t->flags & KEEP_CHAIN) || t->bits >= primary->bits);
 	}
 	assert(phantom == 0);
 
@@ -175,7 +187,8 @@ struct pht *pht_check(const struct pht *ht, const char *abortstr)
 
 
 static struct _pht_table *new_table(
-	struct pht *ht, const struct _pht_table *prev)
+	struct pht *ht, struct _pht_table *prev,
+	bool keep_chain)
 {
 	/* find a size that can hold all items in @ht twice before hitting
 	 * t_max_elems().
@@ -198,12 +211,22 @@ static struct _pht_table *new_table(
 		t->common_mask = prev->common_mask;
 		t->common_bits = prev->common_bits;
 		t->perfect_bit = prev->perfect_bit;
+		assert(~prev->flags & KEEP_CHAIN);
+		if(keep_chain && prev->bits >= t->bits) prev->flags |= KEEP_CHAIN;
 	} else {
 		t->perfect_bit = NO_PERFECT_BIT;
 		t->common_mask = ~0ul;
 		assert(t->common_bits == 0);
 	}
 	list_add(&ht->tables, &t->link);
+
+	/* since migration proceeds oldest-first, we must only rely on tombstone
+	 * recreation in the most recent table.
+	 */
+	struct _pht_table *oth;
+	list_for_each(&ht->tables, oth, link) {
+		if(oth != t && oth != prev) oth->flags &= ~KEEP_CHAIN;
+	}
 
 	return t;
 }
@@ -229,7 +252,7 @@ static struct _pht_table *update_common(
 		t->bits = 0;
 	} else {
 		if(t->elems > 0) {
-			t = new_table(ht, t);
+			t = new_table(ht, t, true);
 			if(t == NULL) return NULL;
 		}
 
@@ -311,8 +334,7 @@ static bool fast_migrate(struct _pht_table *t,
 			 * directly, losing the perfect bit only when the sole home
 			 * position is occupied.
 			 */
-			int scale = mig->bits - t->bits;
-			off >>= scale;
+			off >>= mig->bits - t->bits;
 			perfect = t_perfect_mask(t);
 		} else {
 			/* a perfect item may also migrate to a position after its home
@@ -342,9 +364,27 @@ static bool fast_migrate(struct _pht_table *t,
 			off = ((off + 1) << scale) & t_mask;
 			perfect = 0;
 		}
-	} else {
-		/* imperfect items always migrate by rehash. but stay tuned. */
+	} else if(mig->chain_start == 0) {
+		/* imperfect items until the first chain break may have wrapped
+		 * around, so should be rehashed always.
+		 *
+		 * (technically this could be avoided when the very last slot is 0,
+		 * possibly by setting chain_start to 1 << mig->bits, but there's no
+		 * convenient way to test that right now.)
+		 */
+		assert(~e & t_perfect_mask(mig));
 		return false;
+	} else {
+		/* imperfect items may migrate to a corresponding position, or farther
+		 * down, iff all the potential slots of the item's entire hash chain
+		 * are occupied in the larger destination. this is guaranteed when the
+		 * latter is no larger than the source and tombstones are copied by
+		 * migration.
+		 */
+		if(~mig->flags & KEEP_CHAIN) return false;
+		assert(mig->bits >= t->bits);	/* implied by KEEP_CHAIN */
+		off >>= mig->bits - t->bits;
+		perfect = 0;
 	}
 
 	/* brekkie's up, ya slack cunt */
@@ -395,6 +435,23 @@ static bool mig_item(
 }
 
 
+static inline void mig_scan_item(
+	struct _pht_table *t, struct _pht_table *mig,
+	uintptr_t e)
+{
+	if(e == 0) {
+		mig->chain_start = mig->nextmig;
+	} else if(e == TOMBSTONE && (mig->flags & KEEP_CHAIN)) {
+		assert(mig->bits >= t->bits);
+		size_t off = (mig->nextmig - 1) >> (mig->bits - t->bits);
+		if(t->table[off] == 0) {
+			t->table[off] = TOMBSTONE;
+			t->deleted++;
+		}
+	}
+}
+
+
 /* as necessary for a single successful call of pht_add(), migrate one item
  * from the very last subtable while calling rehash at most once.
  */
@@ -417,7 +474,7 @@ static void mig_step(struct pht *ht, struct _pht_table *t)
 	do {
 		assert(mig->nextmig < (size_t)1 << mig->bits);
 		e = mig->table[mig->nextmig++];
-		if(e == 0) mig->chain_start = mig->nextmig;
+		mig_scan_item(t, mig, e);
 	} while(!is_valid(e));
 	size_t elems = mig->elems - 1;
 	bool rehashed = !mig_item(ht, t, mig, e, false);
@@ -432,7 +489,7 @@ static void mig_step(struct pht *ht, struct _pht_table *t)
 		mig->nextmig + left / sizeof(uintptr_t));
 	while(mig->nextmig < lim) {
 		e = mig->table[mig->nextmig++];
-		if(e == 0) mig->chain_start = mig->nextmig;
+		mig_scan_item(t, mig, e);
 		assert((left -= sizeof(uintptr_t), left >= 0));
 		if(is_valid(e)) {
 			assert(elems == mig->elems);
@@ -466,7 +523,10 @@ bool pht_add(struct pht *ht, size_t hash, const void *p)
 		assert(t == NULL
 			|| t->elems + 1 <= t_max_elems(t)
 			|| list_tail(&ht->tables, struct _pht_table, link) == t);
-		t = new_table(ht, t);
+
+		/* remove tombstones when fill condition was hit. */
+		t = new_table(ht, t,
+			t == NULL || t->elems + 1 + t->deleted <= t_max_fill(t));
 		if(unlikely(t == NULL)) return false;
 	}
 	assert(t == list_top(&ht->tables, struct _pht_table, link));
