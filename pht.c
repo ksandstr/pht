@@ -179,8 +179,6 @@ struct pht *pht_check(const struct pht *ht, const char *abortstr)
 		assert((~t->flags & KEEP_CHAIN) || t->bits >= primary->bits);
 	}
 	assert(phantom == 0);
-
-	/* TODO: add more, use @abortstr somehow */
 #endif
 
 	return (struct pht *)ht;
@@ -242,7 +240,7 @@ static struct _pht_table *update_common(
 		/* de-common exactly one set bit above TOMBSTONE, so that the sole
 		 * valid entry won't look like 0 or TOMBSTONE.
 		 */
-		int b = ffsll((uintptr_t)p & ~1ul) - 1;
+		int b = ffsl((uintptr_t)p & ~1ul) - 1;
 		assert(b >= 0);
 		t->common_mask = ~((uintptr_t)1 << b);
 		t->common_bits = (uintptr_t)p & t->common_mask;
@@ -309,8 +307,8 @@ static void table_add(struct _pht_table *t, size_t hash, const void *p)
  * if the item must be rehashed and reinserted, and true otherwise. caller
  * must adjust @mig->elems when successful.
  */
-static bool fast_migrate(struct _pht_table *t,
-	struct _pht_table *mig, uintptr_t e, size_t off)
+static bool fast_migrate(
+	struct _pht_table *t, struct _pht_table *mig, uintptr_t e)
 {
 	assert(t->elems < (size_t)1 << t->bits);
 	assert(t->nextmig == 0);
@@ -328,7 +326,7 @@ static bool fast_migrate(struct _pht_table *t,
 	assert(t->perfect_bit == NO_PERFECT_BIT
 		|| t->perfect_bit == mig->perfect_bit
 		|| (~t->common_mask & t_perfect_mask(mig)));
-	size_t t_mask = ((size_t)1 << t->bits) - 1;
+	size_t off = mig->nextmig - 1, t_mask = ((size_t)1 << t->bits) - 1;
 	uintptr_t perfect;
 	if(e & t_perfect_mask(mig)) {
 		if(t->bits <= mig->bits) {
@@ -432,7 +430,7 @@ static bool mig_item(
 	uintptr_t e, bool fast_only)
 {
 	assert(is_valid(e));
-	bool fast = fast_migrate(t, mig, e, mig->nextmig - 1);
+	bool fast = fast_migrate(t, mig, e);
 	if(!fast) {
 		if(fast_only) return false;
 		const void *m = entry_to_ptr(mig, e);
