@@ -18,6 +18,7 @@
 
 /* _pht_table flags */
 #define KEEP_CHAIN 1
+#define CHAIN_SAFE 2
 
 
 struct _pht_table
@@ -212,6 +213,7 @@ static struct _pht_table *new_table(
 		t->common_bits = prev->common_bits;
 		t->perfect_bit = prev->perfect_bit;
 		assert(~prev->flags & KEEP_CHAIN);
+		assert(~prev->flags & CHAIN_SAFE);
 		if(keep_chain && prev->bits >= t->bits) prev->flags |= KEEP_CHAIN;
 	} else {
 		t->perfect_bit = NO_PERFECT_BIT;
@@ -373,17 +375,27 @@ static bool fast_migrate(struct _pht_table *t,
 		 * convenient way to test that right now.)
 		 */
 		assert(~e & t_perfect_mask(mig));
+		assert(~mig->flags & CHAIN_SAFE);
 		return false;
 	} else {
 		/* imperfect items may migrate to a corresponding position, or farther
 		 * down, iff all the potential slots of the item's entire hash chain
 		 * are occupied in the larger destination. this is guaranteed when the
 		 * latter is no larger than the source and tombstones are copied by
-		 * migration.
+		 * migration, or when there aren't chain-ends produced by not-copied
+		 * tombstones or imperfect migrations to a larger table.
 		 */
-		if(~mig->flags & KEEP_CHAIN) return false;
-		assert(mig->bits >= t->bits);	/* implied by KEEP_CHAIN */
-		off >>= mig->bits - t->bits;
+		if(t->bits <= mig->bits) {
+			if((~mig->flags & KEEP_CHAIN) && (~mig->flags & CHAIN_SAFE)) {
+				return false;
+			}
+			off >>= mig->bits - t->bits;
+		} else if(mig->flags & CHAIN_SAFE) {
+			off <<= t->bits - mig->bits;
+			mig->flags &= ~CHAIN_SAFE;
+		} else {
+			return false;
+		}
 		perfect = 0;
 	}
 
@@ -441,12 +453,16 @@ static inline void mig_scan_item(
 {
 	if(e == 0) {
 		mig->chain_start = mig->nextmig;
-	} else if(e == TOMBSTONE && (mig->flags & KEEP_CHAIN)) {
-		assert(mig->bits >= t->bits);
-		size_t off = (mig->nextmig - 1) >> (mig->bits - t->bits);
-		if(t->table[off] == 0) {
-			t->table[off] = TOMBSTONE;
-			t->deleted++;
+		mig->flags |= CHAIN_SAFE;
+	} else if(e == TOMBSTONE) {
+		mig->flags &= ~CHAIN_SAFE;
+		if(mig->flags & KEEP_CHAIN) {
+			assert(mig->bits >= t->bits);
+			size_t off = (mig->nextmig - 1) >> (mig->bits - t->bits);
+			if(t->table[off] == 0) {
+				t->table[off] = TOMBSTONE;
+				t->deleted++;
+			}
 		}
 	}
 }
