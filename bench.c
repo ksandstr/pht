@@ -135,7 +135,7 @@ static void print_tallied(
 	FILE *stream, const char *header,
 	size_t count, const uint32_t *samples)
 {
-	struct tally *t = tally_new(count / 4);
+	struct tally *t = tally_new(count * 5 / 4);
 	for(size_t j=0; j < count; j++) tally_add(t, samples[j]);
 	fprintf(stream, "%s: num=%zu, min=%zd, max=%zd, mean=%zd\n",
 		header, tally_num(t), tally_min(t), tally_max(t), tally_mean(t));
