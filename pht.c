@@ -75,7 +75,8 @@ static inline size_t t_bucket(const struct _pht_table *t, size_t hash) {
 	 * (arbitrarily) and xor it in.
 	 */
 	hash ^= (hash >> 17) | (hash << (sizeof hash * CHAR_BIT - 17));
-	return t->bits > 0 ? hash >> (sizeof hash * CHAR_BIT - t->bits) : 0;
+	assert(t->bits > 0);
+	return hash >> (sizeof hash * CHAR_BIT - t->bits);
 }
 
 
@@ -130,6 +131,8 @@ struct pht *pht_check(const struct pht *ht, const char *abortstr)
 	const struct _pht_table *t,
 		*primary = list_top(&ht->tables, struct _pht_table, link);
 	list_for_each(&ht->tables, t, link) {
+		assert(t->bits > 1);
+
 		phantom -= t->elems;
 		assert(t->deleted <= (size_t)1 << t->bits);
 
@@ -190,13 +193,17 @@ static struct _pht_table *new_table(
 	bool keep_chain)
 {
 	/* find a size that can hold all items in @ht twice before hitting
-	 * t_max_elems().
+	 * t_max_elems(), and always allocates at least 4 items for convenience
+	 * wrt ->bits.
 	 */
-	size_t target = (ht->elems * 2 * 4) / 3;
-	int bits = ht->elems > 0 ? 31 - bitops_clz32(target) : 0;
+	size_t target = max_t(size_t, 4, (ht->elems * 2 * 4) / 3);
+	int bits = sizeof(uintptr_t) * CHAR_BIT == 32 ? bitops_hs32(target)
+		: bitops_hs64(target);
 	if((size_t)1 << bits < target) bits++;
-	/* (the t_max_elems formula breaks down below bits < 2.) */
-	assert(bits < 2 || ((size_t)3 << bits) / 4 >= ht->elems * 2);
+	assert((size_t)1 << bits >= target);
+	assert(bits > 1);
+	assert(((size_t)3 << bits) / 4 >= ht->elems * 2);
+
 	struct _pht_table *t = calloc(1, sizeof *t + (sizeof(uintptr_t) << bits));
 	if(t == NULL) return NULL;
 
@@ -245,11 +252,11 @@ static struct _pht_table *update_common(
 		t->common_mask = ~((uintptr_t)1 << b);
 		t->common_bits = (uintptr_t)p & t->common_mask;
 
-		/* this'd waste both space and scanning time when t->bits > 0, so
+		/* this'd waste both space and scanning time when t->bits > 2, so
 		 * let's only waste space instead.
 		 */
 		assert(t->elems == 0);
-		t->bits = 0;
+		t->bits = 2;
 	} else {
 		if(t->elems > 0) {
 			t = new_table(ht, t, true);
@@ -273,7 +280,7 @@ static struct _pht_table *update_common(
 
 static void table_add(struct _pht_table *t, size_t hash, const void *p)
 {
-	assert(t->elems < 1 << t->bits);
+	assert(t->elems < (size_t)1 << t->bits);
 	uintptr_t perfect = t_perfect_mask(t),
 		e = stash_bits(t, hash) | ptr_to_entry(t, p);
 	size_t mask = ((size_t)1 << t->bits) - 1, i = t_bucket(t, hash);
@@ -343,12 +350,7 @@ static bool fast_migrate(
 			 * last slot, because it's not known if the perfect bit should be
 			 * set.
 			 */
-			if(t->bits < 2) {
-				/* this breaks down when there are exactly two slots;
-				 * then we'd get the perfect bit wrong half the time.
-				 */
-				return false;
-			}
+			assert(t->bits >= 2);	/* or perfect bit will always be wrong */
 			int scale = t->bits - mig->bits;
 			assert((off + 1) << scale <= (size_t)1 << t->bits);
 			for(size_t i = off << scale; i < (off + 1) << scale; i++) {
