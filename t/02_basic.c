@@ -159,8 +159,14 @@ int main(void)
 		"delta", "zaxxon", "uridium", "sanxion", "salamander", "krakout",
 		"the way of the exploding fist", "blue max", "choplifter",
 		"little computer people", "bagitman", "bozo's night out",
+
+		"white", "black", "spanish", "yellow", "hot", "cold",
+		"wet", "tight", "big", "bloody", "fat", "hairy",
+		"smelly", "velvet", "silk", "naugahyde", "snappin'",
+		"horse", "dog", "chicken", "fake", "apple pie",
+		"slashed in half", "blown out",
 	};
-	assert(ARRAY_SIZE(strs) == 103);	/* because prime. */
+	assert(ARRAY_SIZE(strs) == 127);	/* because prime. */
 
 	struct pht ht = PHT_INITIALIZER(ht, &rehash_str, NULL);
 	ok1(pht_count(&ht) == 0);
