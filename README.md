@@ -8,7 +8,7 @@ which produces meaningless results when not built under `-O2 -DNDEBUG` in
 CFLAGS, or when run unlike how the script provided would.
 
 The core idea, relayed by someone on Reddit years ago, is that of handling
-hash table growth progressively to gain a far better maximum bound for adding
+hash table growth progressively to gain a superior maximum bound for adding
 an entry to a hashed multiset. Due to cache and pipeline effects this also
 amounts to 20-30% fewer total clock cycles spent in artificial "add"
 benchmarks, while other statistics are somewhat worse due to an extra
@@ -17,18 +17,19 @@ correct tradeoff for interactive programs as of 2020, and more cycles spent in
 some positive and all negative lookups to step through secondary tables.
 
 The practical reason for this data structure is to demonstrate a low-latency
-alternative to mutexed htables, so as to reduce knock-on sleeping in cases
-where htable runs a big loop.
+alternative to htables, so as to reduce knock-on sleeping in cases where a
+mutex is contended more while htable runs a big loop. There is currently no
+multi-threaded benchmark.
 
 The fanciful reason is that even if my lock-free/wait-free hash table had a
 sound migration mechanism (and it might not), its higher-level design is
 nevertheless lacking in guarantees wrt space and time. So this project exists
 also as a vehicle for exploring that, before lfht gets a proper refit, before
-it gets applied in the transactional memory thing.
+it is in turn applied in the transactional memory library.
 
 Currently "pht" is mostly feature complete. Unless a significant new
-optimization comes along, further development is limited to improving the test
-suite.
+optimization comes along, further development is limited to improving its test
+and benchmarking suites, and its documentation.
 
 The inter-table migration algorithm for this data structure, consisting of an
 "inner" algorithm that avoids rehashing while migrating items and an "outer"

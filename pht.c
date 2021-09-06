@@ -278,6 +278,7 @@ static struct _pht_table *update_common(
 }
 
 
+/* table_add(), add to a table */
 static void table_add(struct _pht_table *t, size_t hash, const void *p)
 {
 	assert(t->elems < (size_t)1 << t->bits);
